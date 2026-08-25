@@ -1,0 +1,11 @@
+{
+  "taskId": "示例任务",
+  "profile": "standard-feature",
+  "lane": "L2",
+  "summary": "",
+  "contractsChanged": [],
+  "verification": [],
+  "skippedChecks": [],
+  "knownLimitations": [],
+  "status": "planned"
+}

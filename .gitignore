@@ -27,6 +27,7 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+generated/verification/
 
 # Node.js / Next.js
 node_modules/

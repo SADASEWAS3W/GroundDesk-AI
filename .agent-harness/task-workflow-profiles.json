@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "lanes": {
+    "L0": "只分析、写文档、重复任务或因输入不足而阻塞，不修改运行时代码",
+    "L1": "局部低风险 UI、文案、文档或仅测试改动",
+    "L2": "影响一到两个运行层的标准功能或 Bug 修复",
+    "L3": "涉及 Agent 路由、RAG、模型供应商、数据库、安全、部署或跨层契约"
+  },
+  "profiles": {
+    "documentation": {
+      "lane": "L0",
+      "workflow": "feature-development.md",
+      "requiredGates": ["secrets", "architecture"]
+    },
+    "simple-bug": {
+      "lane": "L1",
+      "workflow": "bugfix.md",
+      "requiredGates": ["secrets", "architecture", "backend-tests", "frontend-tests"]
+    },
+    "standard-feature": {
+      "lane": "L2",
+      "workflow": "feature-development.md",
+      "requiredGates": ["secrets", "architecture", "embedding-contract", "backend-tests", "frontend-tests"]
+    },
+    "api-contract-change": {
+      "lane": "L2",
+      "workflow": "api-contract-change.md",
+      "requiredGates": ["secrets", "architecture", "backend-tests", "frontend-tests", "compose"]
+    },
+    "rag-or-agent-change": {
+      "lane": "L3",
+      "workflow": "rag-change.md",
+      "requiredGates": ["secrets", "architecture", "embedding-contract", "backend-tests", "frontend-tests", "compose"]
+    },
+    "database-migration": {
+      "lane": "L3",
+      "workflow": "database-migration.md",
+      "requiredGates": ["secrets", "architecture", "embedding-contract", "backend-tests", "compose"]
+    },
+    "model-provider-change": {
+      "lane": "L3",
+      "workflow": "rag-change.md",
+      "requiredGates": ["secrets", "architecture", "embedding-contract", "backend-tests", "frontend-tests", "compose"]
+    },
+    "release": {
+      "lane": "L3",
+      "workflow": "feature-development.md",
+      "requiredGates": ["secrets", "architecture", "embedding-contract", "backend-tests", "frontend-tests", "compose-full"]
+    }
+  }
+}
