@@ -87,49 +87,61 @@ def test_json_formatter_with_exception():
 
 
 def test_agent_context_dataclass():
-    """AgentContext stores db_pool and openai_client."""
+    """AgentContext stores db_pool and model_client."""
     from agent.context import AgentContext
 
     pool = MagicMock()
     client = MagicMock()
-    ctx = AgentContext(db_pool=pool, openai_client=client)
+    ctx = AgentContext(db_pool=pool, model_client=client)
 
     assert ctx.db_pool is pool
-    assert ctx.openai_client is client
+    assert ctx.model_client is client
 
 
 @patch("agent.context.create_redis_client", new_callable=AsyncMock, return_value=None)
 @patch("agent.context.create_pool", new_callable=AsyncMock)
 @patch("agent.context.AsyncOpenAI")
 async def test_build_context_with_args(mock_openai_cls, mock_create_pool, mock_redis):
-    """build_context with explicit dsn + api_key."""
+    """build_context with explicit Qwen-compatible credentials."""
     from agent.context import AgentContext, build_context
 
     mock_create_pool.return_value = MagicMock()
     mock_openai_cls.return_value = MagicMock()
 
-    ctx = await build_context(dsn="postgresql://test", openai_api_key="sk-test")
+    ctx = await build_context(
+        dsn="postgresql://test",
+        dashscope_api_key="test-key",
+        dashscope_base_url="https://example.test/v1",
+    )
 
     assert isinstance(ctx, AgentContext)
     mock_create_pool.assert_awaited_once_with(dsn="postgresql://test")
-    mock_openai_cls.assert_called_once_with(api_key="sk-test")
+    mock_openai_cls.assert_called_once_with(
+        api_key="test-key", base_url="https://example.test/v1"
+    )
     mock_redis.assert_awaited_once()
 
 
 @patch("agent.context.create_redis_client", new_callable=AsyncMock, return_value=None)
 @patch("agent.context.create_pool", new_callable=AsyncMock)
 @patch("agent.context.AsyncOpenAI")
-async def test_build_context_reads_env(mock_openai_cls, mock_create_pool, mock_redis):
+async def test_build_context_reads_env(
+    mock_openai_cls, mock_create_pool, mock_redis, monkeypatch
+):
     """build_context with None args → reads env vars."""
     from agent.context import build_context
 
     mock_create_pool.return_value = MagicMock()
     mock_openai_cls.return_value = MagicMock()
 
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "env-key")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://env.example/v1")
     await build_context()
 
     mock_create_pool.assert_awaited_once_with(dsn=None)
-    mock_openai_cls.assert_called_once_with(api_key=None)
+    mock_openai_cls.assert_called_once_with(
+        api_key="env-key", base_url="https://env.example/v1"
+    )
     mock_redis.assert_awaited_once()
 
 

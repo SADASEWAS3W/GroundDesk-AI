@@ -114,7 +114,7 @@ flowchart TD
 
     TOOLS --> PG[(PostgreSQL + pgvector<br/>CRM + Knowledge Base)]
     TOOLS --> RD[(Redis<br/>cache + jobs)]
-    AGENT --> OAI[OpenAI API<br/>gpt-4o + embeddings]
+    AGENT --> OAI[Alibaba Cloud Model Studio<br/>Qwen + embeddings]
 ```
 
 **How to describe each layer in an interview:**
@@ -126,7 +126,7 @@ flowchart TD
 | **Job layer** | `agent/cache.py` | Accepts the work instantly, runs it in the background, and stores the result in Redis so the user isn't kept waiting |
 | **The Agent** | `agent/` | The brain. It follows a strict workflow and decides which tools to call, in what order |
 | **Tools** | `agent/tools/` | The agent's "hands" — small, safe functions that touch the database, the knowledge base, and the cache |
-| **Data + cache + AI** | PostgreSQL, Redis, OpenAI | The database (which *is* the CRM), the fast cache, and the AI models |
+| **Data + cache + AI** | PostgreSQL, Redis, Qwen | The database (which *is* the CRM), the fast cache, and the AI models |
 
 ---
 
@@ -140,9 +140,9 @@ sequenceDiagram
     participant API as FastAPI /api/chat
     participant R as Redis (job store)
     participant BG as Background Task
-    participant AG as AI Agent (gpt-4o)
+    participant AG as AI Agent (qwen-plus)
     participant DB as PostgreSQL + pgvector
-    participant AI as OpenAI API
+    participant AI as Alibaba Cloud Model Studio
 
     U->>API: 1. POST message + email + channel
     API->>R: 2. Save job {status: "processing"}
@@ -186,8 +186,8 @@ The "why" matters more than the "what" in an interview. Here's the reasoning beh
 | Technology | What it does here | **Why it was chosen** |
 |-----------|-------------------|------------------------|
 | **OpenAI Agents SDK** | Runs the AI agent and its tool-calling loop | It gives ready-made building blocks (`Agent`, `Runner`, `@function_tool`) so I don't have to hand-write the loop of "ask the model → it calls a tool → feed result back → repeat". It also injects shared context (DB, OpenAI client, Redis) into every tool **without exposing it to the model** |
-| **GPT-4o** | The reasoning model that follows the workflow and writes replies | It's reliable at following a long, strict set of rules (the workflow + guardrails) and produces natural, on-tone answers. The model is configurable via an env var |
-| **text-embedding-3-small** | Turns text into a list of 1536 numbers that capture meaning | Cheap and fast, with quality that's more than enough for searching a few hundred help articles |
+| **Qwen Plus** | The reasoning model that follows the workflow and writes replies | It is accessed through Alibaba Cloud Model Studio's OpenAI-compatible API and is configurable via an environment variable |
+| **Qwen text-embedding-v4** | Turns text into a list of 1536 numbers that capture meaning | OpenAI-compatible, multilingual embeddings served by Alibaba Cloud Model Studio |
 | **FastAPI** | The web/API layer | Async by default (great for lots of waiting-on-AI requests), built-in input validation via Pydantic, and **built-in background tasks** — exactly what the async pattern needs, with no extra library |
 | **PostgreSQL + pgvector** | Stores all data **and** does the semantic search | One database for both normal data (customers, tickets) **and** vector search. No separate vector database to run, back up, or keep in sync. It's transactional and battle-tested. *PostgreSQL **is** the CRM* |
 | **asyncpg** | The PostgreSQL driver | Fast, fully async, with connection pooling. A small custom "codec" teaches it to convert Python lists to pgvector's vector type |
@@ -238,7 +238,7 @@ The system prompt forces a strict order of operations and several **hard guardra
 
 How it works inside `search_knowledge_base`:
 
-1. The question is sent to OpenAI's `text-embedding-3-small` model, which returns an **embedding** — a list of 1536 numbers that represents the meaning of the text.
+1. The question is sent to Qwen's `text-embedding-v4` model, which returns an **embedding** — a list of 1536 numbers that represents the meaning of the text.
 2. That embedding is compared against the embeddings of all help articles using **cosine similarity** (pgvector's `<=>` operator), which measures how close two meanings are.
 3. Only articles above a **similarity threshold (0.25)** are kept, and the **top 3** are returned.
 4. If nothing clears the bar, the tool returns "no match" and the agent escalates to a human instead of guessing.
@@ -256,7 +256,7 @@ AI replies can take many seconds. Instead of holding the connection open:
 
 ### 3. Caching (to save money and time)
 
-Calling OpenAI and the database for the *same* thing repeatedly is wasteful, so common results are cached in Redis using the **cache-aside** pattern (check cache first, fall back to the source, then store the result):
+Calling the model API and database for the *same* thing repeatedly is wasteful, so common results are cached in Redis using the **cache-aside** pattern (check cache first, fall back to the source, then store the result):
 
 | What's cached | How long | Why |
 |---------------|----------|-----|
@@ -433,7 +433,7 @@ ai-customer-support-agent/
 ```bash
 git clone https://github.com/jawwad-ali/ai-customer-support-agent.git
 cd ai-customer-support-agent
-cp .env.example .env   # add your OPENAI_API_KEY
+cp .env.example .env   # add your DASHSCOPE_API_KEY and base URL
 docker compose up
 ```
 
@@ -465,7 +465,7 @@ cd web && npm install && cd ..
 
 # Configure
 cp .env.example .env
-# Edit .env: DATABASE_URL, OPENAI_API_KEY, REDIS_URL
+# Edit .env: DATABASE_URL, DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, REDIS_URL
 
 # Initialize the database
 psql $DATABASE_URL < database/migrations/001_initial_schema.sql
@@ -566,7 +566,7 @@ Then pause and let them ask about whichever part interests them — every claim 
 ## Likely Interview Questions & Strong Answers
 
 **Q: What is "semantic search" and why not just use keywords?**
-A: Keyword search only matches exact words, so "I can't log in" wouldn't find an article called "Reset your password." Semantic search converts text into embeddings — lists of numbers that capture meaning — and finds the closest matches by *meaning*. I use OpenAI's `text-embedding-3-small` and pgvector's cosine similarity.
+A: Keyword search only matches exact words, so "I can't log in" wouldn't find an article called "Reset your password." Semantic search converts text into embeddings — lists of numbers that capture meaning — and finds the closest matches by *meaning*. I use Qwen's `text-embedding-v4` at 1536 dimensions and pgvector's cosine similarity.
 
 **Q: How do you stop the AI from hallucinating (making things up)?**
 A: Three layers. First, the system prompt forbids answering from anything but knowledge-base articles. Second, the search applies a similarity threshold, so weak matches are dropped. Third, if there are zero good matches, the agent is required to escalate to a human rather than guess.

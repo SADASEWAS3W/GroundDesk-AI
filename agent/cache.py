@@ -211,7 +211,8 @@ async def invalidate_pattern(
 # ---------------------------------------------------------------------------
 def make_kb_cache_key(query: str, top_k: int = 3) -> str:
     """Return ``kb:search:{sha256[:16]}`` from normalized query + top_k."""
-    normalized = f"{query.strip().lower()}|{top_k}"
+    # v2 separates Qwen embedding results from the previous OpenAI vector space.
+    normalized = f"v2|{query.strip().lower()}|{top_k}"
     digest = hashlib.sha256(normalized.encode()).hexdigest()[:16]
     return f"kb:search:{digest}"
 

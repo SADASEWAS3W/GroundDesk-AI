@@ -6,7 +6,7 @@ Usage:
 Requires:
     - DATABASE_URL env var pointing to a PostgreSQL instance with the schema
       from 001_initial_schema.sql already applied.
-    - OPENAI_API_KEY env var for embedding generation.
+    - DASHSCOPE_API_KEY and DASHSCOPE_BASE_URL for embedding generation.
 """
 
 from __future__ import annotations
@@ -262,11 +262,27 @@ ARTICLES: list[dict[str, str]] = [
 async def _generate_embeddings(
     client: AsyncOpenAI,
     texts: list[str],
-    model: str = "text-embedding-3-small",
+    model: str = "text-embedding-v4",
+    dimensions: int = 1536,
+    batch_size: int = 10,
 ) -> list[list[float]]:
-    """Generate embeddings for a batch of texts."""
-    response = await client.embeddings.create(input=texts, model=model)
-    return [item.embedding for item in response.data]
+    """Generate embeddings in provider-compatible batches of at most 10."""
+    if not 1 <= batch_size <= 10:
+        raise ValueError("batch_size must be between 1 and 10")
+
+    embeddings: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        response = await client.embeddings.create(
+            input=texts[start : start + batch_size],
+            model=model,
+            dimensions=dimensions,
+            encoding_format="float",
+        )
+        embeddings.extend(item.embedding for item in response.data)
+
+    if any(len(embedding) != dimensions for embedding in embeddings):
+        raise ValueError(f"Embedding model must return {dimensions} dimensions")
+    return embeddings
 
 
 async def seed(dsn: str | None = None) -> int:
@@ -275,11 +291,22 @@ async def seed(dsn: str | None = None) -> int:
     Returns the number of articles inserted.
     """
     dsn = dsn or os.environ["DATABASE_URL"]
-    client = AsyncOpenAI()  # reads OPENAI_API_KEY from env
+    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    base_url = os.environ.get("DASHSCOPE_BASE_URL")
+    if not api_key:
+        raise RuntimeError("DASHSCOPE_API_KEY is required")
+    if not base_url:
+        raise RuntimeError("DASHSCOPE_BASE_URL is required")
+    dimensions = int(os.environ.get("EMBEDDING_DIMENSIONS", "1536"))
+    if dimensions != 1536:
+        raise RuntimeError("EMBEDDING_DIMENSIONS must be 1536 for the current schema")
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    model = os.environ.get("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
 
     logger.info("Generating embeddings for %d articles …", len(ARTICLES))
     texts = [f"{a['title']}\n\n{a['content']}" for a in ARTICLES]
-    embeddings = await _generate_embeddings(client, texts)
+    embeddings = await _generate_embeddings(client, texts, model, dimensions)
 
     conn: asyncpg.Connection = await asyncpg.connect(dsn)
     try:

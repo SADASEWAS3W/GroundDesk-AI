@@ -49,8 +49,8 @@ def mock_pool(mock_conn):
 
 
 @pytest.fixture
-def mock_openai():
-    """Mock AsyncOpenAI client with default embedding response."""
+def mock_model_client():
+    """Mock OpenAI-compatible Qwen client with an embedding response."""
     client = MagicMock()
     embedding = MagicMock()
     embedding.embedding = [0.01] * 1536
@@ -62,9 +62,9 @@ def mock_openai():
 
 
 @pytest.fixture
-def agent_context(mock_pool, mock_openai):
-    """AgentContext wired to mock pool + mock OpenAI."""
-    return AgentContext(db_pool=mock_pool, openai_client=mock_openai)
+def agent_context(mock_pool, mock_model_client):
+    """AgentContext wired to a mock pool and Qwen-compatible client."""
+    return AgentContext(db_pool=mock_pool, model_client=mock_model_client)
 
 
 @pytest.fixture
@@ -101,10 +101,10 @@ async def mock_redis():
 
 
 @pytest.fixture
-def agent_context_with_cache(mock_pool, mock_openai, mock_redis):
-    """AgentContext wired to mock pool + mock OpenAI + fakeredis."""
+def agent_context_with_cache(mock_pool, mock_model_client, mock_redis):
+    """AgentContext wired to mock pool + model client + fakeredis."""
     return AgentContext(
-        db_pool=mock_pool, openai_client=mock_openai, redis_client=mock_redis
+        db_pool=mock_pool, model_client=mock_model_client, redis_client=mock_redis
     )
 
 

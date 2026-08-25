@@ -10,6 +10,7 @@ import pytest
 
 from agent.tools.knowledge import (
     _EMBEDDING_MODEL,
+    _EMBEDDING_DIMENSIONS,
     _SIMILARITY_THRESHOLD,
     search_knowledge_base,
 )
@@ -23,13 +24,14 @@ def test_similarity_threshold():
 
 
 def test_embedding_model():
-    assert _EMBEDDING_MODEL == "text-embedding-3-small"
+    assert _EMBEDDING_MODEL == "text-embedding-v4"
+    assert _EMBEDDING_DIMENSIONS == 1536
 
 
 # ── search_knowledge_base ───────────────────────────────────────────────
 
 
-async def test_search_happy_path(tool_ctx, mock_conn, mock_openai, sample_uuid):
+async def test_search_happy_path(tool_ctx, mock_conn, mock_model_client, sample_uuid):
     """Returns matching articles when found."""
     mock_conn.fetch.return_value = [
         {
@@ -53,9 +55,15 @@ async def test_search_happy_path(tool_ctx, mock_conn, mock_openai, sample_uuid):
     assert result["articles"][0]["title"] == "How to Reset Your Password"
     # Similarity scores are NOT exposed to the LLM — only in debug logs
     assert "similarity" not in result["articles"][0]
+    mock_model_client.embeddings.create.assert_awaited_once_with(
+        input="password reset",
+        model="text-embedding-v4",
+        dimensions=1536,
+        encoding_format="float",
+    )
 
 
-async def test_search_no_results(tool_ctx, mock_conn, mock_openai):
+async def test_search_no_results(tool_ctx, mock_conn, mock_model_client):
     """No matching articles → no_match status with empty articles list."""
     mock_conn.fetch.return_value = []
 
@@ -70,7 +78,7 @@ async def test_search_no_results(tool_ctx, mock_conn, mock_openai):
     assert result["articles"] == []
 
 
-async def test_search_custom_top_k(tool_ctx, mock_conn, mock_openai, sample_uuid):
+async def test_search_custom_top_k(tool_ctx, mock_conn, mock_model_client, sample_uuid):
     """Respects custom top_k parameter."""
     mock_conn.fetch.return_value = [
         {
@@ -89,9 +97,9 @@ async def test_search_custom_top_k(tool_ctx, mock_conn, mock_openai, sample_uuid
     assert "articles" in result
 
 
-async def test_search_embedding_error(tool_ctx, mock_openai):
+async def test_search_embedding_error(tool_ctx, mock_model_client):
     """OpenAI embedding failure → error JSON."""
-    mock_openai.embeddings.create.side_effect = RuntimeError("API error")
+    mock_model_client.embeddings.create.side_effect = RuntimeError("API error")
 
     result = json.loads(
         await search_knowledge_base.on_invoke_tool(
@@ -104,7 +112,23 @@ async def test_search_embedding_error(tool_ctx, mock_openai):
     assert "unavailable" in result["error"]
 
 
-async def test_search_db_error(tool_ctx, mock_conn, mock_openai):
+async def test_search_rejects_wrong_embedding_dimensions(
+    tool_ctx, mock_model_client
+):
+    """A provider response with the wrong vector size is never queried."""
+    mock_model_client.embeddings.create.return_value.data[0].embedding = [0.1] * 1024
+
+    result = json.loads(
+        await search_knowledge_base.on_invoke_tool(
+            tool_ctx,
+            json.dumps({"query": "test"}),
+        )
+    )
+
+    assert result == {"error": "knowledge base search unavailable"}
+
+
+async def test_search_db_error(tool_ctx, mock_conn, mock_model_client):
     """DB query failure → error JSON."""
     mock_conn.fetch.side_effect = RuntimeError("query failed")
 
@@ -122,7 +146,7 @@ async def test_search_db_error(tool_ctx, mock_conn, mock_openai):
 
 
 async def test_cache_hit_skips_openai_and_db(
-    tool_ctx_with_cache, mock_conn, mock_openai, sample_uuid
+    tool_ctx_with_cache, mock_conn, mock_model_client, sample_uuid
 ):
     """Second identical query returns cached result — OpenAI and DB not called again."""
     # First call: cache MISS — full pipeline runs
@@ -146,7 +170,7 @@ async def test_cache_hit_skips_openai_and_db(
     assert len(first["articles"]) == 1
 
     # Record call counts after first invocation
-    embedding_calls_after_first = mock_openai.embeddings.create.call_count
+    embedding_calls_after_first = mock_model_client.embeddings.create.call_count
     db_calls_after_first = mock_conn.fetch.call_count
 
     # Second call: same query — cache HIT
@@ -161,11 +185,11 @@ async def test_cache_hit_skips_openai_and_db(
     assert second == first
 
     # OpenAI and DB were NOT called again
-    assert mock_openai.embeddings.create.call_count == embedding_calls_after_first
+    assert mock_model_client.embeddings.create.call_count == embedding_calls_after_first
     assert mock_conn.fetch.call_count == db_calls_after_first
 
 
-async def test_cache_miss_no_redis(tool_ctx, mock_conn, mock_openai, sample_uuid):
+async def test_cache_miss_no_redis(tool_ctx, mock_conn, mock_model_client, sample_uuid):
     """When redis_client is None, search still works (full pipeline, no cache)."""
     mock_conn.fetch.return_value = [
         {

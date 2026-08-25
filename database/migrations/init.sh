@@ -9,7 +9,8 @@
 #
 # Environment:
 #   PGHOST, PGPORT, PGUSER, PGPASSWORD, PGDATABASE — PostgreSQL connection
-#   OPENAI_API_KEY (optional) — if set, runs knowledge base seeding
+#   DASHSCOPE_API_KEY (optional) - if set, runs knowledge base seeding
+#   DASHSCOPE_BASE_URL          - OpenAI-compatible Model Studio endpoint
 #   DATABASE_URL (optional)  — used by the Python seed script
 # =============================================================================
 
@@ -35,11 +36,11 @@ echo "[init.sh] Schema migration complete."
 
 # -------------------------------------------------------
 # Step 2: Optionally seed the knowledge base
-# Requires OPENAI_API_KEY for embedding generation.
+# Requires DASHSCOPE_API_KEY for embedding generation.
 # Skipped gracefully if the key is not set.
 # -------------------------------------------------------
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-    echo "[init.sh] OPENAI_API_KEY detected — seeding knowledge base..."
+if [ -n "${DASHSCOPE_API_KEY:-}" ]; then
+    echo "[init.sh] DASHSCOPE_API_KEY detected - seeding knowledge base..."
 
     # Build DATABASE_URL from PG* vars if not already set
     export DATABASE_URL="${DATABASE_URL:-postgresql://${PGUSER:-postgres}:${PGPASSWORD:-postgres}@${PGHOST:-localhost}:${PGPORT:-5432}/${PGDATABASE:-crm}}"
@@ -48,7 +49,7 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
 
     echo "[init.sh] Knowledge base seeding complete."
 else
-    echo "[init.sh] OPENAI_API_KEY not set — skipping knowledge base seeding."
+    echo "[init.sh] DASHSCOPE_API_KEY not set - skipping knowledge base seeding."
     echo "[init.sh] You can seed later with: python -m database.migrations.002_seed_knowledge_base"
 fi
 

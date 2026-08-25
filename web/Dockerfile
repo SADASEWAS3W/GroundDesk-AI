@@ -58,6 +58,7 @@ FROM node:22-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV HOSTNAME=0.0.0.0
 
 # Create non-root user (alpine uses addgroup/adduser, not groupadd/useradd)
 RUN addgroup -S app && adduser -S -G app -h /app app

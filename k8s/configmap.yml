@@ -8,6 +8,10 @@ metadata:
     component: config
     part-of: crm
 data:
-  OPENAI_MODEL: "gpt-4o"
+  DASHSCOPE_BASE_URL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  QWEN_CHAT_MODEL: "qwen-plus"
+  QWEN_EMBEDDING_MODEL: "text-embedding-v4"
+  EMBEDDING_DIMENSIONS: "1536"
+  AGENTS_TRACING_DISABLED: "true"
   REDIS_URL: "redis://redis:6379"
   NEXT_PUBLIC_API_URL: "http://api:8000"

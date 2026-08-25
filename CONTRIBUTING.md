@@ -27,7 +27,7 @@ cd web && npm install && cd ..
 
 # Environment
 cp .env.example .env
-# Fill in DATABASE_URL, OPENAI_API_KEY, REDIS_URL
+# Fill in DATABASE_URL, DASHSCOPE_API_KEY, DASHSCOPE_BASE_URL, REDIS_URL
 ```
 
 ### Running Tests

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 from agents import RunContextWrapper, function_tool
 
@@ -13,7 +14,11 @@ from agent.context import AgentContext
 logger = logging.getLogger(__name__)
 
 _SIMILARITY_THRESHOLD = 0.25
-_EMBEDDING_MODEL = "text-embedding-3-small"
+_EMBEDDING_MODEL = os.environ.get("QWEN_EMBEDDING_MODEL", "text-embedding-v4")
+_EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "1536"))
+
+if _EMBEDDING_DIMENSIONS != 1536:
+    raise RuntimeError("EMBEDDING_DIMENSIONS must be 1536 for the current schema")
 
 
 @function_tool
@@ -33,7 +38,7 @@ async def search_knowledge_base(
         top_k: Maximum number of articles to return (default 3).
     """
     pool = ctx.context.db_pool
-    openai = ctx.context.openai_client
+    model_client = ctx.context.model_client
     redis_client = ctx.context.redis_client
 
     # ── Cache check ─────────────────────────────────────────────────
@@ -47,8 +52,18 @@ async def search_knowledge_base(
 
     # 1. Generate embedding for the query
     try:
-        resp = await openai.embeddings.create(input=query, model=_EMBEDDING_MODEL)
+        resp = await model_client.embeddings.create(
+            input=query,
+            model=_EMBEDDING_MODEL,
+            dimensions=_EMBEDDING_DIMENSIONS,
+            encoding_format="float",
+        )
         query_embedding = resp.data[0].embedding
+        if len(query_embedding) != _EMBEDDING_DIMENSIONS:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {_EMBEDDING_DIMENSIONS}, "
+                f"received {len(query_embedding)}"
+            )
     except Exception:
         logger.exception("Failed to generate query embedding")
         return json.dumps({"error": "knowledge base search unavailable"})
