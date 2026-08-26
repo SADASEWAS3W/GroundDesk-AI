@@ -8,6 +8,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
+from agent.retrieval.confidence import RetrievalConfidencePolicy
 from agent.retrieval.models import (
     RetrievedDocument,
     RetrievalDiagnostics,
@@ -44,7 +45,8 @@ class HybridRetrievalService:
         fusion_strategy: FusionStrategy,
         reranker: Reranker | None = None,
         candidate_top_k: int = 10,
-        reranker_timeout_seconds: float = 10.0,
+        reranker_timeout_seconds: float = 15.0,
+        confidence_policy: RetrievalConfidencePolicy | None = None,
     ) -> None:
         self._vector_retriever = vector_retriever
         self._bm25_retriever = bm25_retriever
@@ -59,6 +61,7 @@ class HybridRetrievalService:
         ):
             raise ValueError("reranker_timeout_seconds must be positive")
         self._reranker_timeout_seconds = float(reranker_timeout_seconds)
+        self._confidence_policy = confidence_policy or RetrievalConfidencePolicy()
 
     async def retrieve(
         self,
@@ -211,10 +214,13 @@ class HybridRetrievalService:
                 confidence_reasons=["no_retrieval_results"],
                 diagnostics=diagnostics,
             )
+        confidence_reasons = self._confidence_policy.reasons(documents, diagnostics)
         return RetrievalResult(
             query=query,
             documents=documents,
             strategy=checked_strategy,
+            low_confidence=bool(confidence_reasons),
+            confidence_reasons=confidence_reasons,
             diagnostics=diagnostics,
         )
 

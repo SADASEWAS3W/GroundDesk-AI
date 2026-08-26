@@ -14,6 +14,7 @@ class RetrievalEvalCase:
     relevant_document_titles: tuple[str, ...]
     tags: tuple[str, ...]
     notes: str = ""
+    split: str = "tuning"
 
 
 def load_retrieval_dataset(path: Path) -> list[RetrievalEvalCase]:
@@ -30,6 +31,7 @@ def load_retrieval_dataset(path: Path) -> list[RetrievalEvalCase]:
                 relevant_document_titles=tuple(item["relevant_document_titles"]),
                 tags=tuple(item.get("tags", [])),
                 notes=item.get("notes", ""),
+                split=item.get("split", "tuning"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid dataset row {line_number}") from exc
@@ -39,6 +41,8 @@ def load_retrieval_dataset(path: Path) -> list[RetrievalEvalCase]:
             raise ValueError(f"duplicate eval id: {case.case_id}")
         if len(set(case.relevant_document_titles)) != len(case.relevant_document_titles):
             raise ValueError(f"duplicate relevant title in case: {case.case_id}")
+        if case.split not in {"tuning", "validation"}:
+            raise ValueError(f"invalid eval split in case: {case.case_id}")
         seen_ids.add(case.case_id)
         cases.append(case)
     if not cases:

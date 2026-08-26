@@ -10,6 +10,8 @@ def test_v1_dataset_has_30_unique_cases():
     assert len(cases) == 30
     assert len({case.case_id for case in cases}) == 30
     assert any(not case.relevant_document_titles for case in cases)
+    assert sum(case.split == "tuning" for case in cases) == 20
+    assert sum(case.split == "validation" for case in cases) == 10
 
 
 def test_duplicate_ids_are_rejected(tmp_path):
@@ -20,4 +22,14 @@ def test_duplicate_ids_are_rejected(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate eval id"):
+        load_retrieval_dataset(path)
+
+
+def test_invalid_split_is_rejected(tmp_path):
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        '{"id":"x","query":"q","relevant_document_titles":[],"split":"test"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid eval split"):
         load_retrieval_dataset(path)

@@ -10,6 +10,7 @@ import pytest
 
 from agent.retrieval import (
     HybridRetrievalService,
+    RetrievalConfidencePolicy,
     RerankerProviderError,
     ReciprocalRankFusion,
     RetrievalCapabilityError,
@@ -43,6 +44,35 @@ def _service(vector_documents=(), bm25_documents=(), *, reranker=None, timeout=1
         reranker_timeout_seconds=timeout,
     )
     return service, vector, bm25
+
+
+async def test_eval_calibrated_vector_threshold_marks_weak_result():
+    weak = replace(_document("weak", source="vector"), vector_score=0.39)
+    service, _, _ = _service([weak])
+
+    result = await service.retrieve("outside knowledge", strategy="vector_only")
+
+    assert result.low_confidence is True
+    assert result.confidence_reasons == ["top1_vector_score_below_threshold"]
+
+
+async def test_vector_threshold_keeps_calibrated_boundary_confident():
+    boundary = replace(_document("boundary", source="vector"), vector_score=0.40)
+    service, _, _ = _service([boundary])
+
+    result = await service.retrieve("known answer", strategy="vector_only")
+
+    assert result.low_confidence is False
+    assert result.confidence_reasons == []
+
+
+def test_confidence_threshold_can_be_disabled():
+    policy = RetrievalConfidencePolicy(min_top1_vector_score=None)
+
+    assert policy.reasons(
+        [replace(_document("weak", source="vector"), vector_score=0.1)],
+        MagicMock(reranker_fallback=False),
+    ) == []
 
 
 async def test_vector_only_does_not_call_bm25():
@@ -203,6 +233,8 @@ async def test_reranker_timeout_falls_back_to_rrf():
 
     assert result.diagnostics.reranker_fallback is True
     assert result.diagnostics.fallback_reason == "reranker_timeout"
+    assert result.low_confidence is True
+    assert result.confidence_reasons == ["reranker_fallback"]
 
 
 @pytest.mark.parametrize("timeout", [0, -1, True, float("nan"), float("inf")])

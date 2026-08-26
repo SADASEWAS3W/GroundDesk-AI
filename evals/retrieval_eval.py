@@ -28,7 +28,11 @@ from evals.metrics import percentile, summarize_predictions
 STRATEGIES = ("vector_only", "hybrid", "hybrid_rerank")
 
 
-async def run_live(dataset_path: Path) -> dict:
+async def run_live(
+    dataset_path: Path,
+    *,
+    strategies: tuple[str, ...] = STRATEGIES,
+) -> dict:
     required = ("DATABASE_URL", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL")
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
@@ -69,37 +73,82 @@ async def run_live(dataset_path: Path) -> dict:
         )
 
         strategy_reports = {}
-        for strategy in STRATEGIES:
+        for strategy in strategies:
             metric_inputs = []
+            split_metric_inputs = {"tuning": [], "validation": []}
             latencies = []
             failures = []
+            case_results = []
             fallback_count = 0
+            low_confidence_count = 0
+            answerable_low_confidence_count = 0
             for case in cases:
                 started = time.perf_counter()
                 result = await service.retrieve(case.query, strategy=strategy, top_k=3)
                 latency_ms = (time.perf_counter() - started) * 1000
-                predicted = [document.document_id for document in result.documents]
+                retrieved = [document.document_id for document in result.documents]
                 relevant = {
                     title_to_id[title] for title in case.relevant_document_titles
                 }
-                metric_inputs.append((relevant, predicted))
+                accepted = [] if result.low_confidence else retrieved
+                metric_prediction = retrieved if relevant else accepted
+                metric_inputs.append((relevant, metric_prediction))
+                split_metric_inputs[case.split].append((relevant, metric_prediction))
                 latencies.append(latency_ms)
                 fallback_count += int(result.diagnostics.reranker_fallback)
-                if relevant and not relevant.intersection(predicted[:3]):
+                low_confidence_count += int(result.low_confidence)
+                answerable_low_confidence_count += int(
+                    bool(relevant) and result.low_confidence
+                )
+                case_results.append({
+                    "id": case.case_id,
+                    "query": case.query,
+                    "answerable": bool(relevant),
+                    "split": case.split,
+                    "retrieved_document_ids": retrieved,
+                    "accepted_document_ids": accepted,
+                    "predicted_titles": [document.title for document in result.documents],
+                    "documents": [
+                        {
+                            "document_id": document.document_id,
+                            "title": document.title,
+                            "source_retrievers": list(document.source_retrievers),
+                            "vector_score": document.vector_score,
+                            "bm25_score": document.bm25_score,
+                            "rrf_score": document.rrf_score,
+                            "rerank_score": document.rerank_score,
+                        }
+                        for document in result.documents
+                    ],
+                    "low_confidence": result.low_confidence,
+                    "confidence_reasons": list(result.confidence_reasons),
+                    "reranker_fallback": result.diagnostics.reranker_fallback,
+                    "fallback_reason": result.diagnostics.fallback_reason,
+                    "latency_ms": latency_ms,
+                    "tags": list(case.tags),
+                })
+                if relevant and not relevant.intersection(retrieved[:3]):
                     failures.append({
                         "id": case.case_id,
                         "query": case.query,
                         "relevant_document_ids": sorted(relevant),
-                        "predicted_document_ids": predicted,
+                        "predicted_document_ids": retrieved,
                         "predicted_titles": [document.title for document in result.documents],
                         "tags": list(case.tags),
                     })
             summary = asdict(summarize_predictions(metric_inputs, k=3))
             summary.update({
+                "splits": {
+                    split: asdict(summarize_predictions(items, k=3))
+                    for split, items in split_metric_inputs.items()
+                },
                 "p50_latency_ms": percentile(latencies, 50),
                 "p95_latency_ms": percentile(latencies, 95),
                 "reranker_fallback_count": fallback_count,
+                "low_confidence_count": low_confidence_count,
+                "answerable_low_confidence_count": answerable_low_confidence_count,
                 "failures": failures,
+                "case_results": case_results,
             })
             strategy_reports[strategy] = summary
         return {
@@ -125,13 +174,20 @@ def main() -> None:
         action="store_true",
         help="authorize real embedding and reranker API calls",
     )
+    parser.add_argument(
+        "--strategies",
+        nargs="+",
+        choices=STRATEGIES,
+        default=list(STRATEGIES),
+        help="strategies to evaluate (default: all)",
+    )
     args = parser.parse_args()
     if not args.execute_live:
         raise SystemExit(
             "Live evaluation is disabled. Pass --execute-live to authorize provider calls."
         )
     load_dotenv()
-    report = asyncio.run(run_live(args.dataset))
+    report = asyncio.run(run_live(args.dataset, strategies=tuple(args.strategies)))
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,9 @@
 """Provider-neutral retrieval contracts and services."""
 
+from agent.retrieval.confidence import (
+    DEFAULT_MIN_TOP1_VECTOR_SCORE,
+    RetrievalConfidencePolicy,
+)
 from agent.retrieval.models import (
     MAX_TOP_K,
     RETRIEVAL_STRATEGIES,
@@ -57,6 +61,7 @@ __all__ = [
     "DEFAULT_MAX_CANDIDATES",
     "DEFAULT_MAX_DOCUMENT_CHARS",
     "DEFAULT_MAX_QUERY_CHARS",
+    "DEFAULT_MIN_TOP1_VECTOR_SCORE",
     "DEFAULT_RERANK_MODEL",
     "FakeRetrievalService",
     "FusionStrategy",
@@ -81,6 +86,7 @@ __all__ = [
     "RetrievalService",
     "RetrievalStrategy",
     "RetrievalCapabilityError",
+    "RetrievalConfidencePolicy",
     "VectorRetriever",
     "VectorRetrievalError",
     "validate_strategy",

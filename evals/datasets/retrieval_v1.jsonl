@@ -1,30 +1,30 @@
 {"id":"password-001","query":"How do I reset my password?","relevant_document_titles":["How to Reset Your Password"],"tags":["password","en"]}
 {"id":"password-002","query":"我忘记密码了，怎么重新设置？","relevant_document_titles":["How to Reset Your Password"],"tags":["password","zh"]}
 {"id":"login-001","query":"My account is locked after failed logins","relevant_document_titles":["Troubleshooting Login Issues"],"tags":["login","en"]}
-{"id":"login-002","query":"2FA code works but I still cannot sign in","relevant_document_titles":["Troubleshooting Login Issues","How to Enable Two-Factor Authentication (2FA)"],"tags":["login","2fa"]}
+{"id":"login-002","query":"2FA code works but I still cannot sign in","relevant_document_titles":["Troubleshooting Login Issues","How to Enable Two-Factor Authentication (2FA)"],"tags":["login","2fa"],"split":"validation"}
 {"id":"2fa-001","query":"How can I enable two factor authentication?","relevant_document_titles":["How to Enable Two-Factor Authentication (2FA)"],"tags":["2fa","en"]}
 {"id":"2fa-002","query":"在哪里关闭2FA？","relevant_document_titles":["How to Enable Two-Factor Authentication (2FA)"],"tags":["2fa","zh"]}
-{"id":"export-001","query":"Export all of my account data as JSON","relevant_document_titles":["How to Export Your Data"],"tags":["export","exact"]}
+{"id":"export-001","query":"Export all of my account data as JSON","relevant_document_titles":["How to Export Your Data"],"tags":["export","exact"],"split":"validation"}
 {"id":"export-002","query":"数据导出链接能用几天？","relevant_document_titles":["How to Export Your Data"],"tags":["export","zh"]}
 {"id":"api-001","query":"What is the API rate limit for Enterprise?","relevant_document_titles":["API Documentation and Access"],"tags":["api","exact"]}
 {"id":"api-002","query":"Python SDK and bearer token docs","relevant_document_titles":["API Documentation and Access"],"tags":["api","keywords"]}
-{"id":"webhook-001","query":"Webhook signature verification and retry count","relevant_document_titles":["Using Webhooks for Automation"],"tags":["webhook","exact"]}
+{"id":"webhook-001","query":"Webhook signature verification and retry count","relevant_document_titles":["Using Webhooks for Automation"],"tags":["webhook","exact"],"split":"validation"}
 {"id":"webhook-002","query":"task.created 回调失败后会重试吗","relevant_document_titles":["Using Webhooks for Automation"],"tags":["webhook","mixed"]}
 {"id":"billing-001","query":"Compare Free Pro and Enterprise subscriptions","relevant_document_titles":["Billing and Subscription Plans"],"tags":["billing"]}
 {"id":"billing-002","query":"Where can I download last month's invoice?","relevant_document_titles":["Understanding Your Invoice"],"tags":["invoice"]}
-{"id":"billing-003","query":"My invoice has the wrong tax amount","relevant_document_titles":["Understanding Your Invoice"],"tags":["invoice","error"]}
+{"id":"billing-003","query":"My invoice has the wrong tax amount","relevant_document_titles":["Understanding Your Invoice"],"tags":["invoice","error"],"split":"validation"}
 {"id":"notifications-001","query":"Turn off email notifications during quiet hours","relevant_document_titles":["Configuring Notification Settings"],"tags":["notifications"]}
 {"id":"integration-001","query":"Can I connect the product to Slack?","relevant_document_titles":["Integrations Overview"],"tags":["integration"]}
-{"id":"integration-002","query":"Does it work with Jira and Google Drive?","relevant_document_titles":["Integrations Overview"],"tags":["integration"]}
+{"id":"integration-002","query":"Does it work with Jira and Google Drive?","relevant_document_titles":["Integrations Overview"],"tags":["integration"],"split":"validation"}
 {"id":"project-001","query":"Archive a completed project","relevant_document_titles":["How to Create and Manage Projects"],"tags":["project"]}
 {"id":"task-001","query":"Add due dates and assignees to a task","relevant_document_titles":["Using the Task Management Feature"],"tags":["task"]}
 {"id":"team-001","query":"What permissions does the Viewer role have?","relevant_document_titles":["Team Management and Roles"],"tags":["team","role"]}
-{"id":"team-002","query":"Transfer team ownership before removing an owner","relevant_document_titles":["Team Management and Roles","How to Delete Your Account"],"tags":["team","multi-doc"]}
+{"id":"team-002","query":"Transfer team ownership before removing an owner","relevant_document_titles":["Team Management and Roles","How to Delete Your Account"],"tags":["team","multi-doc"],"split":"validation"}
 {"id":"security-001","query":"Are data encrypted and are you SOC 2 certified?","relevant_document_titles":["Security and Data Privacy"],"tags":["security"]}
-{"id":"performance-001","query":"The app is slow in a workspace with over 1000 items","relevant_document_titles":["Troubleshooting Slow Performance"],"tags":["performance"]}
+{"id":"performance-001","query":"The app is slow in a workspace with over 1000 items","relevant_document_titles":["Troubleshooting Slow Performance"],"tags":["performance"],"split":"validation"}
 {"id":"settings-001","query":"Change my timezone and profile picture","relevant_document_titles":["Managing Your Account Settings"],"tags":["settings"]}
-{"id":"delete-001","query":"Permanently delete my account","relevant_document_titles":["How to Delete Your Account"],"tags":["delete","high-risk"]}
-{"id":"start-001","query":"How do I create my first workspace and invite teammates?","relevant_document_titles":["Getting Started with Our Platform"],"tags":["onboarding"]}
+{"id":"delete-001","query":"Permanently delete my account","relevant_document_titles":["How to Delete Your Account"],"tags":["delete","high-risk"],"split":"validation"}
+{"id":"start-001","query":"How do I create my first workspace and invite teammates?","relevant_document_titles":["Getting Started with Our Platform"],"tags":["onboarding"],"split":"validation"}
 {"id":"noanswer-001","query":"What is your refund policy?","relevant_document_titles":[],"tags":["no-answer","refund"]}
 {"id":"noanswer-002","query":"Do you support quantum computing workloads?","relevant_document_titles":[],"tags":["no-answer"]}
-{"id":"noanswer-003","query":"Can your company provide legal advice?","relevant_document_titles":[],"tags":["no-answer","legal"]}
+{"id":"noanswer-003","query":"Can your company provide legal advice?","relevant_document_titles":[],"tags":["no-answer","legal"],"split":"validation"}
