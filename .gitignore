@@ -28,6 +28,7 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 generated/verification/
+evals/reports/
 
 # Node.js / Next.js
 node_modules/
