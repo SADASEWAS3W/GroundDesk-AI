@@ -37,3 +37,4 @@
 - `.agent-harness/rules/rag-rules.md`
 - `.agent-harness/rules/api-contract-rules.md`
 - `.agent-harness/rules/security-rules.md`
+- `.agent-harness/rules/collaboration-rules.md`（双人开发任务必须读取；不得假设另一位开发者的实现状态，触及共享边界前必须通知用户）
