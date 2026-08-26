@@ -51,3 +51,33 @@ async def test_pgvector_query_returns_the_document_used_as_query_vector():
     assert documents[0].document_id == str(source["id"])
     assert documents[0].vector_rank == 1
     assert documents[0].vector_score == pytest.approx(1.0, abs=1e-5)
+
+
+async def test_real_knowledge_corpus_builds_and_searches_with_bm25():
+    """Load the database corpus and verify it is searchable without a model."""
+    pytest.importorskip("asyncpg")
+
+    from agent.retrieval import InMemoryBM25Retriever, load_knowledge_documents
+    from database.pool import create_pool
+
+    dsn = os.environ.get("DATABASE_URL")
+    if not dsn:
+        pytest.skip("DATABASE_URL is required for pgvector integration")
+
+    pool = await create_pool(dsn=dsn, min_size=1, max_size=2)
+    try:
+        documents = await load_knowledge_documents(pool)
+    finally:
+        await pool.close()
+
+    if not documents:
+        pytest.skip("knowledge_base is empty")
+
+    retriever = InMemoryBM25Retriever()
+    status = retriever.build(documents)
+    results = await retriever.search(documents[0].title, top_k=100)
+
+    assert status.document_count == len(documents)
+    assert documents[0].document_id in {
+        document.document_id for document in results
+    }
