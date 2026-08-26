@@ -18,12 +18,23 @@ from agent.retrieval.protocols import (
     VectorRetriever,
 )
 from agent.retrieval.service import FakeRetrievalService
+from agent.retrieval.vector import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_IVFFLAT_PROBES,
+    EMBEDDING_DIMENSIONS,
+    PgVectorRetriever,
+    VectorRetrievalError,
+)
 
 __all__ = [
     "BM25Retriever",
     "FakeRetrievalService",
     "FusionStrategy",
     "MAX_TOP_K",
+    "DEFAULT_EMBEDDING_MODEL",
+    "DEFAULT_IVFFLAT_PROBES",
+    "EMBEDDING_DIMENSIONS",
+    "PgVectorRetriever",
     "RETRIEVAL_STRATEGIES",
     "Reranker",
     "RetrievedDocument",
@@ -32,6 +43,7 @@ __all__ = [
     "RetrievalService",
     "RetrievalStrategy",
     "VectorRetriever",
+    "VectorRetrievalError",
     "validate_strategy",
     "validate_top_k",
 ]
