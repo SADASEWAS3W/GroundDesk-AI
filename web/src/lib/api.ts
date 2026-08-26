@@ -29,6 +29,23 @@ export async function getJobStatus(jobId: string): Promise<JobStatus> {
   return res.json();
 }
 
+export async function submitReview(
+  jobId: string,
+  action: "approve" | "edit" | "reject",
+  answer?: string,
+): Promise<JobStatus> {
+  const res = await fetch(`${API_URL}/api/reviews/${encodeURIComponent(jobId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, answer }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function checkHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${API_URL}/health`);

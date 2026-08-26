@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { getJobStatus } from "@/lib/api";
+import type { JobStatus } from "@/lib/types";
 
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_NETWORK_RETRIES = 3;
@@ -11,6 +12,7 @@ export function useJobPolling(
   jobId: string | null,
   onComplete: (response: string) => void,
   onError: (error: string) => void,
+  onReview?: (status: JobStatus) => void,
 ) {
   const [isPolling, setIsPolling] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -18,12 +20,14 @@ export function useJobPolling(
   // Refs to keep callbacks and state stable across setTimeout closures
   const onCompleteRef = useRef(onComplete);
   const onErrorRef = useRef(onError);
+  const onReviewRef = useRef(onReview);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
 
   onCompleteRef.current = onComplete;
   onErrorRef.current = onError;
+  onReviewRef.current = onReview;
 
   const cleanup = useCallback(() => {
     if (timerRef.current) {
@@ -79,6 +83,9 @@ export function useJobPolling(
         if (status.status === "completed" && status.response) {
           cleanup();
           onCompleteRef.current(status.response);
+        } else if (status.status === "waiting_review") {
+          cleanup();
+          onReviewRef.current?.(status);
         } else if (status.status === "failed") {
           cleanup();
           onErrorRef.current(

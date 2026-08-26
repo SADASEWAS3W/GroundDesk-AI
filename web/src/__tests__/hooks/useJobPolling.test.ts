@@ -113,6 +113,30 @@ describe("useJobPolling", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
+  it("stops polling and delegates waiting review", async () => {
+    const review = {
+      job_id: "job-review",
+      status: "waiting_review" as const,
+      response: "Draft [1]",
+      error: null,
+      retry_after: null,
+      requires_human_review: true,
+      citations: [],
+    };
+    mockedGetJobStatus.mockResolvedValueOnce(review);
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+    const onReview = vi.fn();
+
+    renderHook(() => useJobPolling("job-review", onComplete, onError, onReview));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(onReview).toHaveBeenCalledWith(review);
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
   it("calls onError after 3 consecutive network failures", async () => {
     mockedGetJobStatus
       .mockRejectedValueOnce(new Error("fetch failed"))

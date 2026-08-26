@@ -21,6 +21,7 @@ def _mock_lifespan():
     """Bypass the real lifespan (which needs a live DB) and inject a fake AgentContext."""
     ctx = MagicMock()
     ctx.db_pool = MagicMock()
+    ctx.support_graph = None
     app.state.agent_ctx = ctx
     return ctx
 
@@ -141,6 +142,41 @@ class TestJobPolling:
         assert data["status"] == "completed"
         assert data["response"] == "Here is your answer."
         assert data["retry_after"] is None
+
+    @patch("api.main.get_job", new_callable=AsyncMock)
+    async def test_job_waiting_review_exposes_citations_and_reason(self, mock_get, client):
+        mock_get.return_value = {
+            "status": "waiting_review",
+            "response": "Draft [1]",
+            "citations": [{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+            "requires_human_review": True,
+            "review_reason": "high_risk_request",
+        }
+
+        response = await client.get("/api/jobs/review-1")
+
+        assert response.status_code == 200
+        assert response.json()["requires_human_review"] is True
+        assert response.json()["citations"][0]["document_id"] == "doc-1"
+
+
+class TestReview:
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.resume_support_graph", new_callable=AsyncMock)
+    async def test_approve_resumes_interrupted_graph(self, mock_resume, mock_set, client):
+        mock_resume.return_value = {
+            "status": "completed",
+            "answer": "Approved [1]",
+            "citations": [],
+            "review_reason": "high_risk_request",
+        }
+
+        response = await client.post("/api/reviews/review-1", json={"action": "approve"})
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "completed"
+        mock_resume.assert_awaited_once()
+        mock_set.assert_awaited_once()
 
     @patch("api.main.get_job", new_callable=AsyncMock)
     async def test_job_failed(self, mock_get, client: AsyncClient):
@@ -368,6 +404,7 @@ class TestGracefulFallback:
         ctx = MagicMock()
         ctx.db_pool = MagicMock()
         ctx.redis_client = None
+        ctx.support_graph = None
         app.state.agent_ctx = ctx
         return ctx
 

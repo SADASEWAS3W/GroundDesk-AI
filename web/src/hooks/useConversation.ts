@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import type { Conversation, Message } from "@/lib/types";
+import type { JobStatus } from "@/lib/types";
 
 const initialConversation: Conversation = {
   messages: [],
@@ -37,6 +38,7 @@ export function useConversation() {
       status: Message["status"],
       response?: string,
       error?: string,
+      result?: JobStatus,
     ) => {
       setConversation((prev) => {
         const messages = prev.messages.map((msg) =>
@@ -51,6 +53,9 @@ export function useConversation() {
             content: response,
             timestamp: new Date(),
             status: "completed",
+            citations: result?.citations,
+            requiresHumanReview: result?.requires_human_review,
+            reviewReason: result?.review_reason,
           };
           messages.push(agentMessage);
         }

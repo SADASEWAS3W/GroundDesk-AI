@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents import RunContextWrapper
 
@@ -18,6 +18,7 @@ from agent import get_correlation_id, set_correlation_id
 from agent.cache import get_job, set_job
 from agent.context import build_context
 from agent.customer_success_agent import run_agent
+from agent.graph import initialize_support_graph, resume_support_graph, run_support_graph
 from agent.tools.customer import get_customer_history
 from agent.tools.ticket import get_ticket
 
@@ -38,6 +39,10 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     response: str
     correlation_id: str
+    status: str = "completed"
+    citations: list[dict] = Field(default_factory=list)
+    requires_human_review: bool = False
+    review_reason: str | None = None
 
 
 class JobAccepted(BaseModel):
@@ -52,6 +57,14 @@ class JobStatus(BaseModel):
     response: str | None = None
     error: str | None = None
     retry_after: int | None = None
+    citations: list[dict] = Field(default_factory=list)
+    requires_human_review: bool = False
+    review_reason: str | None = None
+
+
+class ReviewDecision(BaseModel):
+    action: str
+    answer: str | None = None
 
 
 class WebhookPayload(BaseModel):
@@ -68,6 +81,7 @@ class WebhookPayload(BaseModel):
 async def lifespan(app: FastAPI):
     load_dotenv()
     app.state.agent_ctx = await build_context()
+    await initialize_support_graph(app.state.agent_ctx)
     logger.info("Agent context created — DB pool, OpenAI client, and Redis ready")
     yield
     if app.state.agent_ctx.redis_client is not None:
@@ -111,13 +125,32 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ---------------------------------------------------------------------------
 
 
+async def _run_workflow(job_id: str, message: str, ctx) -> dict:
+    if getattr(ctx, "support_graph", None) is None:
+        return {"status": "completed", "response": await run_agent(ctx, message)}
+    query = message.split("] ", 1)[-1] if message.startswith("[") else message
+    state = await run_support_graph(ctx.support_graph, {
+        "run_id": job_id,
+        "conversation_id": job_id,
+        "original_query": query,
+        "status": "processing",
+    })
+    return {
+        "status": state.get("status", "completed"),
+        "response": state.get("answer", ""),
+        "citations": state.get("citations", []),
+        "requires_human_review": state.get("requires_human_review", False),
+        "review_reason": state.get("review_reason"),
+    }
+
+
 async def _process_chat(job_id: str, message: str, ctx) -> None:
     """Run the agent in the background and store the result as a job."""
     set_correlation_id(job_id)
     logger.info("Job %s started — background processing", job_id)
     try:
-        response = await run_agent(ctx, message)
-        await set_job(ctx.redis_client, job_id, {"status": "completed", "response": response})
+        result = await _run_workflow(job_id, message, ctx)
+        await set_job(ctx.redis_client, job_id, result)
         logger.info("Job %s completed — response stored", job_id)
     except Exception as exc:
         logger.exception("Job %s failed — %s", job_id, exc)
@@ -134,8 +167,8 @@ async def _process_webhook(job_id: str, channel: str, from_address: str, body: s
     logger.info("Job %s started — %s webhook processing", job_id, channel)
     try:
         message = f"[Customer: {from_address}, Channel: {channel}] {body}"
-        response = await run_agent(ctx, message)
-        await set_job(ctx.redis_client, job_id, {"status": "completed", "response": response})
+        result = await _run_workflow(job_id, message, ctx)
+        await set_job(ctx.redis_client, job_id, result)
         logger.info("Job %s completed — %s response stored", job_id, channel)
     except Exception as exc:
         logger.exception("Job %s failed — %s — %s", job_id, channel, exc)
@@ -219,8 +252,8 @@ async def chat(
     if sync or ctx.redis_client is None:
         if ctx.redis_client is None and not sync:
             logger.warning("Redis unavailable — falling back to sync mode")
-        response = await run_agent(ctx, message)
-        return ChatResponse(response=response, correlation_id=cid)
+        result = await _run_workflow(cid, req.message, ctx)
+        return ChatResponse(correlation_id=cid, **result)
 
     # Async mode (default)
     await set_job(ctx.redis_client, cid, {"status": "processing"})
@@ -242,7 +275,31 @@ async def job_status(job_id: str, request: Request):
         response=data.get("response"),
         error=data.get("error"),
         retry_after=retry,
+        citations=data.get("citations", []),
+        requires_human_review=data.get("requires_human_review", False),
+        review_reason=data.get("review_reason"),
     )
+
+
+@app.post("/api/reviews/{run_id}", response_model=JobStatus)
+async def review_run(run_id: str, decision: ReviewDecision, request: Request):
+    if decision.action not in {"approve", "edit", "reject"}:
+        return JSONResponse(status_code=422, content={"error": "invalid review action"})
+    ctx = request.app.state.agent_ctx
+    state = await resume_support_graph(
+        ctx.support_graph,
+        run_id,
+        {"action": decision.action, "answer": decision.answer},
+    )
+    result = {
+        "status": state.get("status", "completed"),
+        "response": state.get("answer", ""),
+        "citations": state.get("citations", []),
+        "requires_human_review": False,
+        "review_reason": state.get("review_reason"),
+    }
+    await set_job(ctx.redis_client, run_id, result)
+    return JobStatus(job_id=run_id, **result)
 
 
 @app.get("/api/tickets/{ticket_id}")

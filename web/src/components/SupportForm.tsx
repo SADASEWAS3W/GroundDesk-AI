@@ -5,7 +5,8 @@ import { useConversation } from "@/hooks/useConversation";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
 import { useJobPolling } from "@/hooks/useJobPolling";
 import { useCooldown } from "@/hooks/useCooldown";
-import { submitChat } from "@/lib/api";
+import { submitChat, submitReview } from "@/lib/api";
+import type { JobStatus } from "@/lib/types";
 import { InitialForm } from "./InitialForm";
 import { ChatThread } from "./ChatThread";
 import { CustomerHeader } from "./CustomerHeader";
@@ -31,6 +32,8 @@ export function SupportForm() {
     email: string;
     message: string;
   } | null>(null);
+  const [pendingReview, setPendingReview] = useState<JobStatus | null>(null);
+  const [editedAnswer, setEditedAnswer] = useState("");
 
   const handlePollComplete = useCallback(
     (response: string) => {
@@ -60,11 +63,45 @@ export function SupportForm() {
     [activeMessageId, updateMessageStatus],
   );
 
+  const handleReview = useCallback((status: JobStatus) => {
+    if (activeMessageId) {
+      updateMessageStatus(
+        activeMessageId,
+        "completed",
+        status.response ?? "Waiting for human review.",
+        undefined,
+        status,
+      );
+    }
+    setPendingReview(status);
+    setEditedAnswer(status.response ?? "");
+    setActiveJobId(null);
+    setActiveMessageId(null);
+    setIsSubmitting(false);
+  }, [activeMessageId, updateMessageStatus]);
+
   const { isPolling } = useJobPolling(
     activeJobId,
     handlePollComplete,
     handlePollError,
+    handleReview,
   );
+
+  const handleReviewDecision = useCallback(async (
+    action: "approve" | "edit" | "reject",
+  ) => {
+    if (!pendingReview) return;
+    try {
+      await submitReview(
+        pendingReview.job_id,
+        action,
+        action === "edit" ? editedAnswer : undefined,
+      );
+      setPendingReview(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Review failed");
+    }
+  }, [pendingReview, editedAnswer]);
 
   const handleSubmit = useCallback(
     async (name: string, email: string, messageText: string) => {
@@ -155,6 +192,23 @@ export function SupportForm() {
       )}
 
       <ChatThread messages={conversation.messages} />
+
+      {pendingReview && (
+        <section className="rounded-lg border border-amber-300 bg-amber-50 p-3" aria-label="Human review">
+          <p className="text-sm font-medium text-amber-900">Human review required</p>
+          <textarea
+            className="mt-2 min-h-24 w-full rounded border bg-white p-2 text-sm"
+            value={editedAnswer}
+            onChange={(event) => setEditedAnswer(event.target.value)}
+            aria-label="Reviewed answer"
+          />
+          <div className="mt-2 flex gap-2">
+            <button onClick={() => handleReviewDecision("approve")} className="rounded bg-green-700 px-3 py-1 text-white">Approve</button>
+            <button onClick={() => handleReviewDecision("edit")} className="rounded bg-blue-700 px-3 py-1 text-white">Save edit</button>
+            <button onClick={() => handleReviewDecision("reject")} className="rounded bg-red-700 px-3 py-1 text-white">Reject</button>
+          </div>
+        </section>
+      )}
 
       {conversation.isFollowUpMode ? (
         <MessageInput

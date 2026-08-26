@@ -4,6 +4,7 @@ from agent.retrieval.confidence import (
     DEFAULT_MIN_TOP1_VECTOR_SCORE,
     RetrievalConfidencePolicy,
 )
+from agent.retrieval.cached import CachedRetrievalService
 from agent.retrieval.models import (
     MAX_TOP_K,
     RETRIEVAL_STRATEGIES,
@@ -55,6 +56,7 @@ from agent.retrieval.vector import (
 
 __all__ = [
     "BM25Retriever",
+    "CachedRetrievalService",
     "BM25IndexNotBuiltError",
     "BM25IndexStatus",
     "BilingualTokenizer",

@@ -1,5 +1,7 @@
 # AI Customer Support Agent — Multi-Channel Helpdesk with Semantic Search
 
+> The current `improvements` development line also includes a LangGraph workflow, Hybrid Retrieval (pgvector + BM25 + RRF), reranking with safe fallback, bounded citations, grounding checks, and interrupt/resume human review. See [the final integration report](docs/final-integration-report.md).
+
 > An open-source **AI customer support agent** that answers customer questions automatically across **Web**, **Gmail**, and **WhatsApp**. It understands a question, searches a company knowledge base by *meaning* (not just keywords), writes a helpful reply in the right tone for each channel, and hands the conversation to a human when it should. Built with the **OpenAI Agents SDK**, **FastAPI**, **PostgreSQL + pgvector**, **Redis**, and **Next.js**.
 
 > **This README is also an interview guide.** It is written in plain English so you can read it once and confidently explain the whole project — what it does, why it was built this way, how each part works, the trade-offs, the hard problems that came up, and what would come next. Jump to the [Interview Walkthrough](#interview-walkthrough-your-spoken-script) and [Likely Interview Questions](#likely-interview-questions--strong-answers) sections when you're preparing.

@@ -7,6 +7,9 @@ export interface Message {
   status: "sent" | "processing" | "completed" | "failed";
   jobId?: string;
   error?: string;
+  citations?: Citation[];
+  requiresHumanReview?: boolean;
+  reviewReason?: string | null;
 }
 
 // Ordered collection of messages for the current session
@@ -41,10 +44,20 @@ export interface ChatResponse {
 // GET /api/jobs/{job_id} response
 export interface JobStatus {
   job_id: string;
-  status: "processing" | "completed" | "failed";
+  status: "processing" | "completed" | "failed" | "waiting_review" | "rejected";
   response: string | null;
   error: string | null;
   retry_after: number | null;
+  citations?: Citation[];
+  requires_human_review?: boolean;
+  review_reason?: string | null;
+}
+
+export interface Citation {
+  index: number;
+  document_id: string;
+  title: string;
+  excerpt: string;
 }
 
 // GET /health response

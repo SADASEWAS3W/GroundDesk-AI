@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 import asyncpg
 import redis.asyncio as redis
@@ -24,6 +25,8 @@ class AgentContext:
     db_pool: asyncpg.Pool
     model_client: AsyncOpenAI
     redis_client: redis.Redis | None = field(default=None)
+    retrieval_service: Any | None = field(default=None)
+    support_graph: Any | None = field(default=None)
 
 
 async def build_context(
