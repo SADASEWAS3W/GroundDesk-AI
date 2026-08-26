@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -15,7 +16,13 @@ from agent.retrieval.models import (
     validate_strategy,
     validate_top_k,
 )
-from agent.retrieval.protocols import BM25Retriever, FusionStrategy, VectorRetriever
+from agent.retrieval.protocols import (
+    BM25Retriever,
+    FusionStrategy,
+    Reranker,
+    VectorRetriever,
+)
+from agent.retrieval.reranker import RerankerProviderError, RerankerResponseError
 
 
 def _normalize_query(query: str) -> str:
@@ -35,18 +42,29 @@ class HybridRetrievalService:
         vector_retriever: VectorRetriever,
         bm25_retriever: BM25Retriever,
         fusion_strategy: FusionStrategy,
+        reranker: Reranker | None = None,
         candidate_top_k: int = 10,
+        reranker_timeout_seconds: float = 10.0,
     ) -> None:
         self._vector_retriever = vector_retriever
         self._bm25_retriever = bm25_retriever
         self._fusion_strategy = fusion_strategy
+        self._reranker = reranker
         self._candidate_top_k = validate_top_k(candidate_top_k)
+        if (
+            isinstance(reranker_timeout_seconds, bool)
+            or not isinstance(reranker_timeout_seconds, (int, float))
+            or not math.isfinite(reranker_timeout_seconds)
+            or reranker_timeout_seconds <= 0
+        ):
+            raise ValueError("reranker_timeout_seconds must be positive")
+        self._reranker_timeout_seconds = float(reranker_timeout_seconds)
 
     async def retrieve(
         self,
         query: str,
         *,
-        strategy: RetrievalStrategy = "hybrid",
+        strategy: RetrievalStrategy = "hybrid_rerank",
         top_k: int = 3,
     ) -> RetrievalResult:
         checked_strategy = validate_strategy(strategy)
@@ -54,9 +72,9 @@ class HybridRetrievalService:
         normalized_query = " ".join(query.strip().split())
         if not normalized_query:
             return self._empty_result(query=query, strategy=checked_strategy, reason="empty_query")
-        if checked_strategy == "hybrid_rerank":
+        if checked_strategy == "hybrid_rerank" and self._reranker is None:
             raise RetrievalCapabilityError(
-                "hybrid_rerank requires a reranker; it is introduced in stage five"
+                "hybrid_rerank requires a configured reranker"
             )
 
         started = time.perf_counter()
@@ -118,7 +136,57 @@ class HybridRetrievalService:
                     }) or 1,
                 ),
             )
-            documents = fused_documents[:checked_top_k]
+            fusion_finished = time.perf_counter()
+            rerank_latency: float | None = None
+            reranker_fallback = False
+            fallback_reason: str | None = None
+            if checked_strategy == "hybrid_rerank":
+                rerank_started = time.perf_counter()
+                try:
+                    reranked_documents = await asyncio.wait_for(
+                        self._reranker.rerank(
+                            normalized_query,
+                            fused_documents,
+                            top_k=checked_top_k,
+                        ),
+                        timeout=self._reranker_timeout_seconds,
+                    )
+                    documents = self._validate_reranked_documents(
+                        reranked_documents,
+                        fused_documents,
+                        top_k=checked_top_k,
+                    )
+                except TimeoutError:
+                    reranker_fallback = True
+                    fallback_reason = "reranker_timeout"
+                    documents = self._fallback_documents(
+                        fused_documents,
+                        top_k=checked_top_k,
+                    )
+                except RerankerProviderError:
+                    reranker_fallback = True
+                    fallback_reason = "reranker_provider_error"
+                    documents = self._fallback_documents(
+                        fused_documents,
+                        top_k=checked_top_k,
+                    )
+                except (RerankerResponseError, ValueError, TypeError):
+                    reranker_fallback = True
+                    fallback_reason = "reranker_invalid_output"
+                    documents = self._fallback_documents(
+                        fused_documents,
+                        top_k=checked_top_k,
+                    )
+                except Exception:
+                    reranker_fallback = True
+                    fallback_reason = "reranker_error"
+                    documents = self._fallback_documents(
+                        fused_documents,
+                        top_k=checked_top_k,
+                    )
+                rerank_latency = (time.perf_counter() - rerank_started) * 1000
+            else:
+                documents = fused_documents[:checked_top_k]
             finished = time.perf_counter()
             diagnostics = RetrievalDiagnostics(
                 vector_candidate_count=len(vector_documents),
@@ -127,8 +195,11 @@ class HybridRetrievalService:
                 returned_count=len(documents),
                 vector_latency_ms=vector_latency,
                 bm25_latency_ms=bm25_latency,
-                fusion_latency_ms=(finished - fusion_started) * 1000,
+                fusion_latency_ms=(fusion_finished - fusion_started) * 1000,
+                rerank_latency_ms=rerank_latency,
                 total_latency_ms=(finished - started) * 1000,
+                reranker_fallback=reranker_fallback,
+                fallback_reason=fallback_reason,
             )
 
         if not documents:
@@ -157,6 +228,51 @@ class HybridRetrievalService:
         started = time.perf_counter()
         documents = await retriever.search(query, top_k=top_k)
         return documents, (time.perf_counter() - started) * 1000
+
+    @staticmethod
+    def _validate_reranked_documents(
+        documents: Sequence[RetrievedDocument],
+        candidates: Sequence[RetrievedDocument],
+        *,
+        top_k: int,
+    ) -> list[RetrievedDocument]:
+        expected_count = min(top_k, len(candidates))
+        if len(documents) != expected_count:
+            raise RerankerResponseError(
+                "reranker must return the requested number of candidates"
+            )
+        candidate_ids = {document.document_id for document in candidates}
+        returned_ids = [document.document_id for document in documents]
+        if len(set(returned_ids)) != len(returned_ids):
+            raise RerankerResponseError("reranker returned duplicate document IDs")
+        if not set(returned_ids).issubset(candidate_ids):
+            raise RerankerResponseError("reranker introduced an unknown document ID")
+        if any(document.rerank_score is None for document in documents):
+            raise RerankerResponseError("reranker result is missing rerank_score")
+        return [
+            replace(
+                document,
+                metadata=dict(document.metadata),
+                final_rank=rank,
+            )
+            for rank, document in enumerate(documents, start=1)
+        ]
+
+    @staticmethod
+    def _fallback_documents(
+        candidates: Sequence[RetrievedDocument],
+        *,
+        top_k: int,
+    ) -> list[RetrievedDocument]:
+        return [
+            replace(
+                document,
+                metadata=dict(document.metadata),
+                rerank_score=None,
+                final_rank=rank,
+            )
+            for rank, document in enumerate(candidates[:top_k], start=1)
+        ]
 
     @staticmethod
     def _empty_result(
