@@ -41,7 +41,7 @@ def load_retrieval_dataset(path: Path) -> list[RetrievalEvalCase]:
             raise ValueError(f"duplicate eval id: {case.case_id}")
         if len(set(case.relevant_document_titles)) != len(case.relevant_document_titles):
             raise ValueError(f"duplicate relevant title in case: {case.case_id}")
-        if case.split not in {"tuning", "validation"}:
+        if case.split not in {"tuning", "validation", "test"}:
             raise ValueError(f"invalid eval split in case: {case.case_id}")
         seen_ids.add(case.case_id)
         cases.append(case)

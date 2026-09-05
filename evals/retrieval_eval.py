@@ -19,6 +19,7 @@ from agent.retrieval import (
     LLMReranker,
     PgVectorRetriever,
     ReciprocalRankFusion,
+    VectorRetrievalError,
     load_knowledge_documents,
 )
 from database.pool import create_pool
@@ -32,7 +33,10 @@ async def run_live(
     dataset_path: Path,
     *,
     strategies: tuple[str, ...] = STRATEGIES,
+    concurrency: int = 1,
 ) -> dict:
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
+        raise ValueError("concurrency must be a positive integer")
     required = ("DATABASE_URL", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL")
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
@@ -74,26 +78,55 @@ async def run_live(
 
         strategy_reports = {}
         for strategy in strategies:
-            metric_inputs = []
-            split_metric_inputs = {"tuning": [], "validation": []}
+            raw_metric_inputs = []
+            accepted_metric_inputs = []
+            splits = sorted({case.split for case in cases})
+            split_raw_inputs = {split: [] for split in splits}
+            split_accepted_inputs = {split: [] for split in splits}
             latencies = []
             failures = []
+            operational_failures = []
             case_results = []
             fallback_count = 0
             low_confidence_count = 0
             answerable_low_confidence_count = 0
-            for case in cases:
-                started = time.perf_counter()
-                result = await service.retrieve(case.query, strategy=strategy, top_k=3)
-                latency_ms = (time.perf_counter() - started) * 1000
-                retrieved = [document.document_id for document in result.documents]
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def evaluate_case(case):
+                async with semaphore:
+                    started = time.perf_counter()
+                    for attempt in range(3):
+                        try:
+                            result = await service.retrieve(
+                                case.query, strategy=strategy, top_k=3
+                            )
+                            return case, result, (time.perf_counter() - started) * 1000
+                        except VectorRetrievalError as exc:
+                            if attempt == 2:
+                                return case, exc, (time.perf_counter() - started) * 1000
+                            await asyncio.sleep(0.5 * (attempt + 1))
+
+            evaluated = await asyncio.gather(*(evaluate_case(case) for case in cases))
+            for case, result, latency_ms in evaluated:
                 relevant = {
                     title_to_id[title] for title in case.relevant_document_titles
                 }
+                if isinstance(result, Exception):
+                    operational_failures.append({
+                        "id": case.case_id,
+                        "query": case.query,
+                        "error_type": type(result).__name__,
+                        "error": str(result),
+                        "latency_ms": latency_ms,
+                        "tags": list(case.tags),
+                    })
+                    continue
+                retrieved = [document.document_id for document in result.documents]
                 accepted = [] if result.low_confidence else retrieved
-                metric_prediction = retrieved if relevant else accepted
-                metric_inputs.append((relevant, metric_prediction))
-                split_metric_inputs[case.split].append((relevant, metric_prediction))
+                raw_metric_inputs.append((relevant, retrieved))
+                accepted_metric_inputs.append((relevant, accepted))
+                split_raw_inputs[case.split].append((relevant, retrieved))
+                split_accepted_inputs[case.split].append((relevant, accepted))
                 latencies.append(latency_ms)
                 fallback_count += int(result.diagnostics.reranker_fallback)
                 low_confidence_count += int(result.low_confidence)
@@ -136,11 +169,20 @@ async def run_live(
                         "predicted_titles": [document.title for document in result.documents],
                         "tags": list(case.tags),
                     })
-            summary = asdict(summarize_predictions(metric_inputs, k=3))
+            summary = asdict(summarize_predictions(raw_metric_inputs, k=3))
             summary.update({
+                "raw_metrics": asdict(summarize_predictions(raw_metric_inputs, k=3)),
+                "accepted_metrics": asdict(
+                    summarize_predictions(accepted_metric_inputs, k=3)
+                ),
                 "splits": {
-                    split: asdict(summarize_predictions(items, k=3))
-                    for split, items in split_metric_inputs.items()
+                    split: {
+                        "raw": asdict(summarize_predictions(split_raw_inputs[split], k=3)),
+                        "accepted": asdict(
+                            summarize_predictions(split_accepted_inputs[split], k=3)
+                        ),
+                    }
+                    for split in splits
                 },
                 "p50_latency_ms": percentile(latencies, 50),
                 "p95_latency_ms": percentile(latencies, 95),
@@ -148,6 +190,7 @@ async def run_live(
                 "low_confidence_count": low_confidence_count,
                 "answerable_low_confidence_count": answerable_low_confidence_count,
                 "failures": failures,
+                "operational_failures": operational_failures,
                 "case_results": case_results,
             })
             strategy_reports[strategy] = summary
@@ -168,6 +211,12 @@ def main() -> None:
         type=Path,
         default=Path("evals/datasets/retrieval_v1.jsonl"),
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="maximum concurrent retrieval cases (default: 1)",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--execute-live",
@@ -187,7 +236,15 @@ def main() -> None:
             "Live evaluation is disabled. Pass --execute-live to authorize provider calls."
         )
     load_dotenv()
-    report = asyncio.run(run_live(args.dataset, strategies=tuple(args.strategies)))
+    if args.concurrency < 1:
+        parser.error("--concurrency must be positive")
+    report = asyncio.run(
+        run_live(
+            args.dataset,
+            strategies=tuple(args.strategies),
+            concurrency=args.concurrency,
+        )
+    )
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
