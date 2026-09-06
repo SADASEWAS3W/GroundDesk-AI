@@ -1,9 +1,18 @@
-import type { ChatRequest, JobAccepted, JobStatus } from "./types";
+import type {
+  ChatRequest,
+  ChatResponse,
+  JobAccepted,
+  JobStatus,
+  ReviewDetail,
+  ReviewList,
+} from "./types";
 
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export async function submitChat(request: ChatRequest): Promise<JobAccepted> {
+export async function submitChat(
+  request: ChatRequest,
+): Promise<JobAccepted | ChatResponse> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -15,6 +24,24 @@ export async function submitChat(request: ChatRequest): Promise<JobAccepted> {
     throw new Error(body.error ?? `Request failed with status ${res.status}`);
   }
 
+  return res.json();
+}
+
+export async function listReviews(): Promise<ReviewList> {
+  const res = await fetch(`${API_URL}/api/reviews`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getReview(runId: string): Promise<ReviewDetail> {
+  const res = await fetch(`${API_URL}/api/reviews/${encodeURIComponent(runId)}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed with status ${res.status}`);
+  }
   return res.json();
 }
 

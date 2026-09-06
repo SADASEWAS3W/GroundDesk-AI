@@ -20,6 +20,7 @@ describe("Accessibility (axe-core)", () => {
     mockedCheckHealth.mockResolvedValue(true);
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-a11y",
+      run_id: "job-a11y",
       status: "processing",
       retry_after: 2,
     });
@@ -134,6 +135,7 @@ describe("Keyboard navigation", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-kb",
+      run_id: "job-kb",
       status: "processing",
       retry_after: 2,
     });

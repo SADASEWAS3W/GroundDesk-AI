@@ -58,6 +58,7 @@ describe("Error recovery", () => {
       .mockRejectedValueOnce(new Error("Network error"))
       .mockResolvedValueOnce({
         job_id: "job-retry",
+        run_id: "job-retry",
         status: "processing",
         retry_after: 2,
       });
@@ -113,6 +114,7 @@ describe("Error recovery", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-timeout",
+      run_id: "job-timeout",
       status: "processing",
       retry_after: 2,
     });
@@ -153,6 +155,7 @@ describe("Error recovery", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-fail",
+      run_id: "job-fail",
       status: "processing",
       retry_after: 2,
     });
@@ -191,6 +194,7 @@ describe("Error recovery", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-cd",
+      run_id: "job-cd",
       status: "processing",
       retry_after: 2,
     });
@@ -242,6 +246,7 @@ describe("Error recovery", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-net",
+      run_id: "job-net",
       status: "processing",
       retry_after: 2,
     });

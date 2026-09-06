@@ -8,11 +8,15 @@ from typing import Any, TypedDict
 class SupportState(TypedDict, total=False):
     run_id: str
     conversation_id: str
+    ticket_id: str
     original_query: str
     rewritten_query: str
+    rewrite_fallback: bool
+    rewrite_issue: str
     retrieved_documents: list[dict[str, Any]]
     answer: str
     citations: list[dict[str, Any]]
+    generated_citation_document_ids: list[str]
     grounded: bool
     grounding_issues: list[str]
     low_confidence: bool

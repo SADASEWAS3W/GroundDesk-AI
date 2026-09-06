@@ -10,7 +10,7 @@ const DEFAULT_RETRY_AFTER_MS = 5000;
 
 export function useJobPolling(
   jobId: string | null,
-  onComplete: (response: string) => void,
+  onComplete: (status: JobStatus) => void,
   onError: (error: string) => void,
   onReview?: (status: JobStatus) => void,
 ) {
@@ -24,10 +24,13 @@ export function useJobPolling(
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
+  const inReviewRef = useRef(false);
 
-  onCompleteRef.current = onComplete;
-  onErrorRef.current = onError;
-  onReviewRef.current = onReview;
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+    onErrorRef.current = onError;
+    onReviewRef.current = onReview;
+  }, [onComplete, onError, onReview]);
 
   const cleanup = useCallback(() => {
     if (timerRef.current) {
@@ -43,15 +46,19 @@ export function useJobPolling(
 
   useEffect(() => {
     if (!jobId) {
-      setElapsed(0);
       return;
     }
 
     let networkFailures = 0;
     let cancelled = false;
     startTimeRef.current = Date.now();
-    setIsPolling(true);
-    setElapsed(0);
+    inReviewRef.current = false;
+    void Promise.resolve().then(() => {
+      if (!cancelled) {
+        setIsPolling(true);
+        setElapsed(0);
+      }
+    });
 
     // Tick elapsed counter every second
     elapsedTimerRef.current = setInterval(() => {
@@ -68,7 +75,7 @@ export function useJobPolling(
       if (cancelled) return;
 
       // Check timeout
-      if (Date.now() - startTimeRef.current >= TIMEOUT_MS) {
+      if (!inReviewRef.current && Date.now() - startTimeRef.current >= TIMEOUT_MS) {
         cleanup();
         onErrorRef.current("Request timed out. Please try again.");
         return;
@@ -82,10 +89,16 @@ export function useJobPolling(
 
         if (status.status === "completed" && status.response) {
           cleanup();
-          onCompleteRef.current(status.response);
+          onCompleteRef.current(status);
         } else if (status.status === "waiting_review") {
+          if (!inReviewRef.current) {
+            inReviewRef.current = true;
+            onReviewRef.current?.(status);
+          }
+          schedulePoll(DEFAULT_RETRY_AFTER_MS);
+        } else if (status.status === "rejected") {
           cleanup();
-          onReviewRef.current?.(status);
+          onErrorRef.current("The request was not approved during human review.");
         } else if (status.status === "failed") {
           cleanup();
           onErrorRef.current(
@@ -123,5 +136,8 @@ export function useJobPolling(
     };
   }, [jobId, cleanup]);
 
-  return { isPolling, elapsed };
+  return {
+    isPolling: jobId ? isPolling : false,
+    elapsed: jobId ? elapsed : 0,
+  };
 }

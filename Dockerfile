@@ -18,6 +18,10 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# Keep the official index by default while allowing a regional mirror in CI/local builds.
+ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+ENV UV_DEFAULT_INDEX=${UV_DEFAULT_INDEX}
+
 # Copy dependency files FIRST — this layer is cached until pyproject.toml
 # or uv.lock change, so code changes don't re-install all dependencies
 COPY pyproject.toml uv.lock ./

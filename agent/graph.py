@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -10,8 +11,53 @@ from langgraph.types import Command, interrupt
 
 from agent.retrieval import RetrievalService
 from agent.state import SupportState
+from agent.nodes import (
+    AnswerGenerator,
+    DeterministicQueryRewriter,
+    ExtractiveAnswerGenerator,
+    LLMAnswerGenerator,
+    LLMQueryRewriter,
+    QueryRewriter,
+)
 
-HIGH_RISK_TERMS = ("refund", "退款", "legal", "法律", "delete account", "删除账户")
+HIGH_RISK_TERMS = (
+    "refund",
+    "退款",
+    "billing dispute",
+    "chargeback",
+    "账单争议",
+    "legal",
+    "法律",
+    "lawyer",
+    "lawsuit",
+    "delete account",
+    "delete my account",
+    "delete the account",
+    "account deletion",
+    "close my account",
+    "删除账户",
+    "删除账号",
+    "注销账户",
+    "注销账号",
+)
+_CITATION_PATTERN = re.compile(r"\[(\d+)]")
+
+
+def validate_answer_citations(
+    answer: str,
+    citations: list[dict[str, Any]],
+) -> list[str]:
+    """Return deterministic citation issues for a generated or edited answer."""
+    allowed_indices = {int(item["index"]) for item in citations if "index" in item}
+    used_indices = {int(value) for value in _CITATION_PATTERN.findall(answer)}
+    issues: list[str] = []
+    if allowed_indices and not used_indices:
+        issues.append("missing_citation_markers")
+    if not used_indices.issubset(allowed_indices):
+        issues.append("invalid_citation_marker")
+    if used_indices and allowed_indices - used_indices:
+        issues.append("unused_citation_marker")
+    return issues
 
 
 async def initialize_support_graph(context):
@@ -25,6 +71,7 @@ async def initialize_support_graph(context):
         ReciprocalRankFusion,
         load_knowledge_documents,
     )
+    from agent.review import build_review_repository
 
     corpus = await load_knowledge_documents(context.db_pool)
     bm25 = InMemoryBM25Retriever()
@@ -43,7 +90,12 @@ async def initialize_support_graph(context):
         if context.redis_client is not None
         else service
     )
-    context.support_graph = build_support_graph(context.retrieval_service)
+    context.support_graph = build_support_graph(
+        context.retrieval_service,
+        query_rewriter=LLMQueryRewriter(context.model_client),
+        answer_generator=LLMAnswerGenerator(context.model_client),
+    )
+    context.review_repository = build_review_repository(context.redis_client)
     return context.support_graph
 
 
@@ -62,9 +114,25 @@ def _serialize_document(document: Any) -> dict[str, Any]:
     }
 
 
-def build_support_graph(retrieval_service: RetrievalService):
+def build_support_graph(
+    retrieval_service: RetrievalService,
+    *,
+    query_rewriter: QueryRewriter | None = None,
+    answer_generator: AnswerGenerator | None = None,
+):
+    rewriter = query_rewriter or DeterministicQueryRewriter()
+    generator = answer_generator or ExtractiveAnswerGenerator()
+
     async def rewrite_query(state: SupportState) -> dict[str, Any]:
-        return {"rewritten_query": " ".join(state["original_query"].strip().split())}
+        try:
+            rewritten = await rewriter.rewrite(state["original_query"])
+            return {"rewritten_query": rewritten, "rewrite_fallback": False}
+        except Exception:
+            return {
+                "rewritten_query": " ".join(state["original_query"].strip().split()),
+                "rewrite_fallback": True,
+                "rewrite_issue": "query_rewrite_fallback",
+            }
 
     async def retrieve(state: SupportState) -> dict[str, Any]:
         result = await retrieval_service.retrieve(
@@ -79,10 +147,18 @@ def build_support_graph(retrieval_service: RetrievalService):
     async def generate(state: SupportState) -> dict[str, Any]:
         documents = state.get("retrieved_documents", [])
         if not documents:
-            return {"answer": "知识库中没有足够依据回答该问题。", "citations": []}
+            return {
+                "answer": "知识库中没有足够依据回答该问题。",
+                "citations": [],
+                "generated_citation_document_ids": [],
+            }
+        generated = await generator.generate(state["original_query"], documents)
+        reported_ids = generated.citation_document_ids
+        reported_id_set = set(reported_ids)
         citations = []
-        answer_parts = []
         for index, document in enumerate(documents, 1):
+            if document["document_id"] not in reported_id_set:
+                continue
             excerpt = " ".join(document["content"].split())[:280]
             citations.append({
                 "index": index,
@@ -90,12 +166,17 @@ def build_support_graph(retrieval_service: RetrievalService):
                 "title": document["title"],
                 "excerpt": excerpt,
             })
-            answer_parts.append(f"{excerpt} [{index}]")
-        return {"answer": "\n\n".join(answer_parts), "citations": citations}
+        return {
+            "answer": generated.answer,
+            "citations": citations,
+            "generated_citation_document_ids": reported_ids,
+        }
 
     async def grounding_check(state: SupportState) -> dict[str, Any]:
         document_ids = {doc["document_id"] for doc in state.get("retrieved_documents", [])}
         citation_ids = {citation["document_id"] for citation in state.get("citations", [])}
+        reported_ids = state.get("generated_citation_document_ids", [])
+        reported_id_set = set(reported_ids)
         issues = []
         if not document_ids:
             issues.append("no_retrieval_results")
@@ -103,6 +184,16 @@ def build_support_graph(retrieval_service: RetrievalService):
             issues.append("missing_citations")
         if not citation_ids.issubset(document_ids):
             issues.append("invalid_citation_source")
+        if len(reported_ids) != len(reported_id_set):
+            issues.append("duplicate_citation_source")
+        if not reported_id_set.issubset(document_ids):
+            issues.append("invalid_reported_citation_source")
+        if reported_id_set != citation_ids:
+            issues.append("citation_source_mismatch")
+        issues.extend(validate_answer_citations(
+            state.get("answer", ""),
+            state.get("citations", []),
+        ))
         high_risk = any(term in state["original_query"].casefold() for term in HIGH_RISK_TERMS)
         requires_review = bool(issues or state.get("low_confidence") or high_risk)
         reason = (

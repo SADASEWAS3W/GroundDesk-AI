@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from api.main import app
+from agent.review import InMemoryReviewRepository, ReviewRecord
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +23,8 @@ def _mock_lifespan():
     ctx = MagicMock()
     ctx.db_pool = MagicMock()
     ctx.support_graph = None
+    ctx.support_service = None
+    ctx.review_repository = InMemoryReviewRepository()
     app.state.agent_ctx = ctx
     return ctx
 
@@ -51,6 +54,36 @@ class TestHealth:
 
 
 class TestChat:
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    async def test_chat_uses_application_service_when_configured(
+        self, mock_set_job, client: AsyncClient, _mock_lifespan
+    ):
+        service = MagicMock()
+        service.run = AsyncMock(return_value={
+            "run_id": "ignored-by-assertion",
+            "conversation_id": "conversation-1",
+            "ticket_id": "ticket-1",
+            "status": "completed",
+            "response": "Grounded response [1]",
+            "citations": [],
+            "requires_human_review": False,
+            "review_reason": None,
+        })
+        _mock_lifespan.support_service = service
+
+        response = await client.post("/api/chat", json={
+            "message": "How do I reset my password?",
+            "email": "alice@example.com",
+            "name": "Alice",
+        })
+
+        assert response.status_code == 202
+        request = service.run.await_args.args[0]
+        assert request.message == "How do I reset my password?"
+        assert request.identifier_value == "alice@example.com"
+        assert request.name == "Alice"
+        assert mock_set_job.await_count == 2
+
     @patch("api.main.set_job", new_callable=AsyncMock)
     @patch("api.main.run_agent", new_callable=AsyncMock)
     async def test_chat_returns_202_with_job(self, mock_run, mock_set_job, client: AsyncClient):
@@ -111,6 +144,14 @@ class TestChat:
         resp = await client.post("/api/chat", content=b"")
         assert resp.status_code == 422
 
+    async def test_chat_rejects_unknown_channel(self, client: AsyncClient):
+        resp = await client.post("/api/chat", json={
+            "message": "Hi",
+            "email": "a@b.com",
+            "channel": "carrier-pigeon",
+        })
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Job Polling
@@ -158,12 +199,21 @@ class TestJobPolling:
         assert response.status_code == 200
         assert response.json()["requires_human_review"] is True
         assert response.json()["citations"][0]["document_id"] == "doc-1"
+        assert response.json()["response"] is None
 
 
 class TestReview:
     @patch("api.main.set_job", new_callable=AsyncMock)
     @patch("api.main.resume_support_graph", new_callable=AsyncMock)
-    async def test_approve_resumes_interrupted_graph(self, mock_resume, mock_set, client):
+    async def test_approve_resumes_interrupted_graph(
+        self, mock_resume, mock_set, client, _mock_lifespan
+    ):
+        await _mock_lifespan.review_repository.save(ReviewRecord(
+            run_id="review-1",
+            original_query="Delete my account",
+            draft_answer="Draft [1]",
+            citations=[{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+        ))
         mock_resume.return_value = {
             "status": "completed",
             "answer": "Approved [1]",
@@ -177,6 +227,85 @@ class TestReview:
         assert response.json()["status"] == "completed"
         mock_resume.assert_awaited_once()
         mock_set.assert_awaited_once()
+
+    async def test_list_and_detail_only_expose_review_repository(
+        self, client, _mock_lifespan
+    ):
+        await _mock_lifespan.review_repository.save(ReviewRecord(
+            run_id="review-list-1",
+            original_query="Refund please",
+            draft_answer="Internal draft [1]",
+            review_reason="high_risk_request",
+            citations=[{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+        ))
+
+        listing = await client.get("/api/reviews")
+        detail = await client.get("/api/reviews/review-list-1")
+
+        assert listing.status_code == 200
+        assert listing.json()["reviews"][0]["run_id"] == "review-list-1"
+        assert detail.status_code == 200
+        assert detail.json()["draft_answer"] == "Internal draft [1]"
+
+    async def test_unknown_review_returns_404(self, client):
+        response = await client.get("/api/reviews/missing")
+        assert response.status_code == 404
+
+    async def test_edit_requires_answer(self, client, _mock_lifespan):
+        await _mock_lifespan.review_repository.save(ReviewRecord(
+            run_id="review-edit-empty",
+            original_query="Question",
+            draft_answer="Draft [1]",
+            citations=[{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+        ))
+        response = await client.post(
+            "/api/reviews/review-edit-empty",
+            json={"action": "edit", "answer": ""},
+        )
+        assert response.status_code == 422
+
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.resume_support_graph", new_callable=AsyncMock)
+    async def test_repeated_same_decision_is_idempotent(
+        self, mock_resume, mock_set, client, _mock_lifespan
+    ):
+        await _mock_lifespan.review_repository.save(ReviewRecord(
+            run_id="review-repeat",
+            original_query="Refund please",
+            draft_answer="Draft [1]",
+            citations=[{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+        ))
+        mock_resume.return_value = {
+            "status": "completed",
+            "answer": "Draft [1]",
+            "citations": [],
+        }
+
+        first = await client.post("/api/reviews/review-repeat", json={"action": "approve"})
+        second = await client.post("/api/reviews/review-repeat", json={"action": "approve"})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        mock_resume.assert_awaited_once()
+        mock_set.assert_awaited_once()
+
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.resume_support_graph", new_callable=AsyncMock)
+    async def test_conflicting_terminal_decision_returns_409(
+        self, mock_resume, mock_set, client, _mock_lifespan
+    ):
+        await _mock_lifespan.review_repository.save(ReviewRecord(
+            run_id="review-conflict",
+            original_query="Refund please",
+            draft_answer="Draft [1]",
+            citations=[{"index": 1, "document_id": "doc-1", "title": "T", "excerpt": "E"}],
+        ))
+        mock_resume.return_value = {"status": "completed", "answer": "Draft [1]", "citations": []}
+
+        await client.post("/api/reviews/review-conflict", json={"action": "approve"})
+        conflict = await client.post("/api/reviews/review-conflict", json={"action": "reject"})
+
+        assert conflict.status_code == 409
 
     @patch("api.main.get_job", new_callable=AsyncMock)
     async def test_job_failed(self, mock_get, client: AsyncClient):
@@ -405,6 +534,8 @@ class TestGracefulFallback:
         ctx.db_pool = MagicMock()
         ctx.redis_client = None
         ctx.support_graph = None
+        ctx.support_service = None
+        ctx.review_repository = InMemoryReviewRepository()
         app.state.agent_ctx = ctx
         return ctx
 

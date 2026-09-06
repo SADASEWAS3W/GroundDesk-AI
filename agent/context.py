@@ -27,6 +27,8 @@ class AgentContext:
     redis_client: redis.Redis | None = field(default=None)
     retrieval_service: Any | None = field(default=None)
     support_graph: Any | None = field(default=None)
+    review_repository: Any | None = field(default=None)
+    support_service: Any | None = field(default=None)
 
 
 async def build_context(

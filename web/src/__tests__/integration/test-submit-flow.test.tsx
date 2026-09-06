@@ -30,6 +30,7 @@ describe("Submit flow integration", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-123",
+      run_id: "job-123",
       status: "processing",
       retry_after: 2,
     });
@@ -123,6 +124,7 @@ describe("Submit flow integration", () => {
 
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-fail",
+      run_id: "job-fail",
       status: "processing",
       retry_after: 2,
     });

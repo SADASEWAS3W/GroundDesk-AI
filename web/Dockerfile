@@ -20,7 +20,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 
 # npm ci: clean install from lockfile (reproducible, no package-lock updates)
-RUN npm ci --ignore-scripts
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm ci --ignore-scripts --registry=${NPM_REGISTRY}
 
 
 # ---------------------------------------------------------------------------

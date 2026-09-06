@@ -50,7 +50,9 @@ describe("useJobPolling", () => {
     });
 
     expect(mockedGetJobStatus).toHaveBeenCalledWith("job-1");
-    expect(onComplete).toHaveBeenCalledWith("Done!");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "completed", response: "Done!" }),
+    );
   });
 
   it("polls multiple times until completed", async () => {
@@ -88,7 +90,9 @@ describe("useJobPolling", () => {
     });
 
     expect(mockedGetJobStatus).toHaveBeenCalledTimes(2);
-    expect(onComplete).toHaveBeenCalledWith("Here is the answer");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Here is the answer" }),
+    );
   });
 
   it("calls onError when job fails", async () => {
@@ -113,7 +117,7 @@ describe("useJobPolling", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it("stops polling and delegates waiting review", async () => {
+  it("delegates waiting review without exposing a final response", async () => {
     const review = {
       job_id: "job-review",
       status: "waiting_review" as const,
@@ -135,6 +139,41 @@ describe("useJobPolling", () => {
 
     expect(onReview).toHaveBeenCalledWith(review);
     expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it("continues polling until a reviewed response is completed", async () => {
+    mockedGetJobStatus
+      .mockResolvedValueOnce({
+        job_id: "job-review",
+        status: "waiting_review",
+        response: null,
+        error: null,
+        retry_after: null,
+        requires_human_review: true,
+      })
+      .mockResolvedValueOnce({
+        job_id: "job-review",
+        status: "completed",
+        response: "Human-approved response [1]",
+        error: null,
+        retry_after: null,
+      });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+    const onReview = vi.fn();
+
+    renderHook(() => useJobPolling("job-review", onComplete, onError, onReview));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(onReview).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Human-approved response [1]" }),
+    );
   });
 
   it("calls onError after 3 consecutive network failures", async () => {
@@ -207,7 +246,9 @@ describe("useJobPolling", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
 
-    expect(onComplete).toHaveBeenCalledWith("Done");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Done" }),
+    );
     expect(onError).not.toHaveBeenCalled();
   });
 

@@ -46,6 +46,7 @@ describe("Follow-up flow", () => {
       callCount++;
       return {
         job_id: `job-${callCount}`,
+        run_id: `job-${callCount}`,
         status: "processing" as const,
         retry_after: 2,
       };

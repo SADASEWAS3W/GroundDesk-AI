@@ -5,7 +5,7 @@ import { useConversation } from "@/hooks/useConversation";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
 import { useJobPolling } from "@/hooks/useJobPolling";
 import { useCooldown } from "@/hooks/useCooldown";
-import { submitChat, submitReview } from "@/lib/api";
+import { submitChat } from "@/lib/api";
 import type { JobStatus } from "@/lib/types";
 import { InitialForm } from "./InitialForm";
 import { ChatThread } from "./ChatThread";
@@ -32,22 +32,35 @@ export function SupportForm() {
     email: string;
     message: string;
   } | null>(null);
-  const [pendingReview, setPendingReview] = useState<JobStatus | null>(null);
-  const [editedAnswer, setEditedAnswer] = useState("");
+  const [waitingForReview, setWaitingForReview] = useState(false);
+  const [reviewReason, setReviewReason] = useState<string | null>(null);
 
-  const handlePollComplete = useCallback(
-    (response: string) => {
-      if (activeMessageId) {
-        updateMessageStatus(activeMessageId, "completed", response);
-      }
+  const completeMessage = useCallback(
+    (messageId: string, status: JobStatus) => {
+      updateMessageStatus(
+        messageId,
+        "completed",
+        status.response ?? undefined,
+        undefined,
+        status,
+      );
       setActiveJobId(null);
       setActiveMessageId(null);
       setIsSubmitting(false);
       setError(null);
       setLastSubmission(null);
+      setWaitingForReview(false);
+      setReviewReason(null);
       startCooldown();
     },
-    [activeMessageId, updateMessageStatus, startCooldown],
+    [updateMessageStatus, startCooldown],
+  );
+
+  const handlePollComplete = useCallback(
+    (status: JobStatus) => {
+      if (activeMessageId) completeMessage(activeMessageId, status);
+    },
+    [activeMessageId, completeMessage],
   );
 
   const handlePollError = useCallback(
@@ -58,27 +71,23 @@ export function SupportForm() {
       setActiveJobId(null);
       setActiveMessageId(null);
       setIsSubmitting(false);
+      setWaitingForReview(false);
+      setReviewReason(null);
       setError(errMsg);
     },
     [activeMessageId, updateMessageStatus],
   );
 
-  const handleReview = useCallback((status: JobStatus) => {
-    if (activeMessageId) {
-      updateMessageStatus(
-        activeMessageId,
-        "completed",
-        status.response ?? "Waiting for human review.",
-        undefined,
-        status,
-      );
-    }
-    setPendingReview(status);
-    setEditedAnswer(status.response ?? "");
-    setActiveJobId(null);
-    setActiveMessageId(null);
+  const markWaitingForReview = useCallback((messageId: string, status: JobStatus) => {
+    updateMessageStatus(messageId, "waiting_review");
     setIsSubmitting(false);
-  }, [activeMessageId, updateMessageStatus]);
+    setWaitingForReview(true);
+    setReviewReason(status.review_reason ?? null);
+  }, [updateMessageStatus]);
+
+  const handleReview = useCallback((status: JobStatus) => {
+    if (activeMessageId) markWaitingForReview(activeMessageId, status);
+  }, [activeMessageId, markWaitingForReview]);
 
   const { isPolling } = useJobPolling(
     activeJobId,
@@ -86,22 +95,6 @@ export function SupportForm() {
     handlePollError,
     handleReview,
   );
-
-  const handleReviewDecision = useCallback(async (
-    action: "approve" | "edit" | "reject",
-  ) => {
-    if (!pendingReview) return;
-    try {
-      await submitReview(
-        pendingReview.job_id,
-        action,
-        action === "edit" ? editedAnswer : undefined,
-      );
-      setPendingReview(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review failed");
-    }
-  }, [pendingReview, editedAnswer]);
 
   const handleSubmit = useCallback(
     async (name: string, email: string, messageText: string) => {
@@ -120,13 +113,42 @@ export function SupportForm() {
       updateMessageStatus(msg.id, "processing");
 
       try {
-        const job = await submitChat({
+        const submission = await submitChat({
           name,
           email,
           message: messageText,
           channel: "web",
         });
-        setActiveJobId(job.job_id);
+        if ("job_id" in submission) {
+          setActiveJobId(submission.job_id);
+        } else if (submission.status === "completed" && submission.response) {
+          completeMessage(msg.id, {
+            job_id: submission.run_id,
+            run_id: submission.run_id,
+            conversation_id: submission.conversation_id,
+            ticket_id: submission.ticket_id,
+            status: "completed",
+            response: submission.response,
+            error: null,
+            retry_after: null,
+            citations: submission.citations,
+          });
+        } else if (submission.status === "waiting_review") {
+          const reviewStatus: JobStatus = {
+            job_id: submission.run_id,
+            run_id: submission.run_id,
+            conversation_id: submission.conversation_id,
+            ticket_id: submission.ticket_id,
+            status: "waiting_review",
+            response: null,
+            error: null,
+            retry_after: null,
+            requires_human_review: true,
+            review_reason: submission.review_reason,
+          };
+          markWaitingForReview(msg.id, reviewStatus);
+          setActiveJobId(submission.run_id);
+        }
       } catch (err) {
         const errMsg =
           err instanceof Error ? err.message : "Failed to send message";
@@ -141,6 +163,8 @@ export function SupportForm() {
       setCustomerInfo,
       addCustomerMessage,
       updateMessageStatus,
+      completeMessage,
+      markWaitingForReview,
     ],
   );
 
@@ -193,20 +217,12 @@ export function SupportForm() {
 
       <ChatThread messages={conversation.messages} />
 
-      {pendingReview && (
-        <section className="rounded-lg border border-amber-300 bg-amber-50 p-3" aria-label="Human review">
-          <p className="text-sm font-medium text-amber-900">Human review required</p>
-          <textarea
-            className="mt-2 min-h-24 w-full rounded border bg-white p-2 text-sm"
-            value={editedAnswer}
-            onChange={(event) => setEditedAnswer(event.target.value)}
-            aria-label="Reviewed answer"
-          />
-          <div className="mt-2 flex gap-2">
-            <button onClick={() => handleReviewDecision("approve")} className="rounded bg-green-700 px-3 py-1 text-white">Approve</button>
-            <button onClick={() => handleReviewDecision("edit")} className="rounded bg-blue-700 px-3 py-1 text-white">Save edit</button>
-            <button onClick={() => handleReviewDecision("reject")} className="rounded bg-red-700 px-3 py-1 text-white">Reject</button>
-          </div>
+      {waitingForReview && (
+        <section className="rounded-lg border border-amber-300 bg-amber-50 p-3" aria-live="polite">
+          <p className="text-sm font-medium text-amber-900">
+            Your request is waiting for human review. The final response will appear here after approval.
+            {reviewReason ? ` Review reason: ${reviewReason}.` : ""}
+          </p>
         </section>
       )}
 
