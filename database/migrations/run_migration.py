@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import argparse
 import logging
 import os
 from pathlib import Path
@@ -16,9 +17,12 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
-async def run(dsn: str | None = None) -> None:
+async def run(dsn: str | None = None, *, migration: str = "001_initial_schema.sql") -> None:
     dsn = dsn or os.environ["DATABASE_URL"]
-    sql_file = Path(__file__).parent / "001_initial_schema.sql"
+    allowed = {"001_initial_schema.sql", "003_knowledge_chunk_provenance.sql"}
+    if migration not in allowed:
+        raise ValueError("unsupported migration")
+    sql_file = Path(__file__).parent / migration
     sql = sql_file.read_text(encoding="utf-8")
 
     conn = await asyncpg.connect(dsn)
@@ -39,9 +43,14 @@ async def run(dsn: str | None = None) -> None:
 async def main() -> None:
     from dotenv import load_dotenv
 
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--migration", default="001_initial_schema.sql", choices=[
+        "001_initial_schema.sql", "003_knowledge_chunk_provenance.sql",
+    ])
+    args = parser.parse_args()
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
-    await run()
+    await run(migration=args.migration)
 
 
 if __name__ == "__main__":

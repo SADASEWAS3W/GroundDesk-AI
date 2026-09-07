@@ -1,0 +1,13 @@
+{
+  "version": "long-v1",
+  "status": "synthetic-review-required",
+  "provenance": "Expanded from the 18 fictional ARTICLES in database/migrations/002_seed_knowledge_base.py. Not production product documentation.",
+  "sources": [
+    {"source_id": "account-access", "title": "Account Access and Authentication Handbook", "category": "account-management", "path": "account-access.md", "split": "tuning", "seed_titles": ["How to Reset Your Password", "Troubleshooting Login Issues", "How to Enable Two-Factor Authentication (2FA)"]},
+    {"source_id": "workspace", "title": "Workspace Projects and Tasks Handbook", "category": "feature-how-to", "path": "workspace.md", "split": "tuning", "seed_titles": ["Getting Started with Our Platform", "How to Create and Manage Projects", "Using the Task Management Feature"]},
+    {"source_id": "billing", "title": "Subscriptions and Invoices Handbook", "category": "billing", "path": "billing.md", "split": "validation", "seed_titles": ["Billing and Subscription Plans", "Understanding Your Invoice"]},
+    {"source_id": "developer", "title": "API Webhooks and Integrations Handbook", "category": "api", "path": "developer.md", "split": "validation", "seed_titles": ["API Documentation and Access", "Using Webhooks for Automation", "Integrations Overview"]},
+    {"source_id": "data-lifecycle", "title": "Team Access Export and Account Deletion Handbook", "category": "data-export", "path": "data-lifecycle.md", "split": "test", "seed_titles": ["Team Management and Roles", "How to Export Your Data", "How to Delete Your Account"]},
+    {"source_id": "operations", "title": "Account Preferences Performance and Security Handbook", "category": "troubleshooting", "path": "operations.md", "split": "test", "seed_titles": ["Managing Your Account Settings", "Configuring Notification Settings", "Troubleshooting Slow Performance", "Security and Data Privacy"]}
+  ]
+}
