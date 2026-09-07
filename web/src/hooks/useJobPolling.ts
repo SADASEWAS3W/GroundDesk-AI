@@ -10,9 +10,9 @@ const DEFAULT_RETRY_AFTER_MS = 5000;
 
 export function useJobPolling(
   jobId: string | null,
-  onComplete: (status: JobStatus) => void,
-  onError: (error: string) => void,
-  onReview?: (status: JobStatus) => void,
+  onComplete: (status: JobStatus) => void, // 任务完成调用
+  onError: (error: string) => void, // 任务失败调用
+  onReview?: (status: JobStatus) => void, // 需要人工审核调用
 ) {
   const [isPolling, setIsPolling] = useState(false);
   const [elapsed, setElapsed] = useState(0);

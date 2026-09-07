@@ -5,27 +5,28 @@ import type { Conversation, JobStatus, Message } from "@/lib/types";
 
 const initialConversation: Conversation = {
   messages: [],
-  customerName: "",
-  customerEmail: "",
-  isFollowUpMode: false,
+  customerName: "", // 客户名字
+  customerEmail: "", // 客户邮箱
+  isFollowUpMode: false, // 是否已完成第一轮问答，决定初始表单还是追问输入框
 };
 
+// 会话是只存在于当前组件生命周期里。刷新页面、组件卸载或者重新挂载以后，状态都会丢失；没有写入localStorage，也没从后端恢复
 export function useConversation() {
   const [conversation, setConversation] =
     useState<Conversation>(initialConversation);
 
   const addCustomerMessage = useCallback((content: string): Message => {
     const message: Message = {
-      id: crypto.randomUUID(),
+      id: crypto.randomUUID(), // 浏览器生成的UUID
       role: "customer",
-      content,
-      timestamp: new Date(),
-      status: "sent",
+      content, // 客户输入的内容
+      timestamp: new Date(), // 记录时间
+      status: "sent", // 初始状态为sent
     };
 
     setConversation((prev) => ({
       ...prev,
-      messages: [...prev.messages, message],
+      messages: [...prev.messages, message], // 通过不可变更新，把新消息追加到数组末尾
     }));
 
     return message;
@@ -33,11 +34,11 @@ export function useConversation() {
 
   const updateMessageStatus = useCallback(
     (
-      id: string,
-      status: Message["status"],
-      response?: string,
-      error?: string,
-      result?: JobStatus,
+      id: string, // 要更新的客户消息ID
+      status: Message["status"], // 新状态
+      response?: string, // 后端生成的客服答案
+      error?: string, // 失败原因
+      result?: JobStatus, // 完整任务结果，用来提取引用和人工审核信息
     ) => {
       const responseContent = response?.trim();
       const replyId = responseContent ? crypto.randomUUID() : undefined;
@@ -67,9 +68,9 @@ export function useConversation() {
             status: isWaitingReview ? "waiting_review" : "completed",
             jobId,
             replyToId: id,
-            citations: result?.citations,
-            requiresHumanReview: result?.requires_human_review,
-            reviewReason: result?.review_reason,
+            citations: result?.citations, // 引用
+            requiresHumanReview: result?.requires_human_review, // 人工审核标记
+            reviewReason: result?.review_reason, // 审核原因
           };
           const existingReplyIndex = messages.findIndex(
             (message) => message.role === "agent" && message.replyToId === id,
@@ -142,6 +143,7 @@ export function useConversation() {
     });
   }, []);
 
+  // 保存首次提交的客户资料
   const setCustomerInfo = useCallback((name: string, email: string) => {
     setConversation((prev) => ({
       ...prev,
