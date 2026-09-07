@@ -124,6 +124,10 @@ describe("Follow-up flow", () => {
       email: "ali@test.com",
       message: "Follow-up question",
       channel: "web",
+      history: [
+        { role: "customer", content: "First question" },
+        { role: "agent", content: "Agent reply 1" },
+      ],
     });
   });
 

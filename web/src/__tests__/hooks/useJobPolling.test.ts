@@ -50,7 +50,9 @@ describe("useJobPolling", () => {
     });
 
     expect(mockedGetJobStatus).toHaveBeenCalledWith("job-1");
-    expect(onComplete).toHaveBeenCalledWith("Done!");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Done!" }),
+    );
   });
 
   it("polls multiple times until completed", async () => {
@@ -88,7 +90,9 @@ describe("useJobPolling", () => {
     });
 
     expect(mockedGetJobStatus).toHaveBeenCalledTimes(2);
-    expect(onComplete).toHaveBeenCalledWith("Here is the answer");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Here is the answer" }),
+    );
   });
 
   it("calls onError when job fails", async () => {
@@ -207,8 +211,53 @@ describe("useJobPolling", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
 
-    expect(onComplete).toHaveBeenCalledWith("Done");
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Done" }),
+    );
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("treats a completed job without a response as an error", async () => {
+    mockedGetJobStatus.mockResolvedValueOnce({
+      job_id: "job-empty",
+      status: "completed",
+      response: "",
+      error: null,
+      retry_after: null,
+    });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("job-empty", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(
+      "The completed request returned an empty response.",
+    );
+  });
+
+  it("reports a waiting-review result when no review handler is registered", async () => {
+    mockedGetJobStatus.mockResolvedValueOnce({
+      job_id: "job-review",
+      status: "waiting_review",
+      response: "Draft",
+      error: null,
+      retry_after: null,
+    });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("job-review", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      "This response requires human review.",
+    );
   });
 
   it("times out after 5 minutes", async () => {

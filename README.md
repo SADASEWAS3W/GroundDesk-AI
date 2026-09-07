@@ -146,7 +146,7 @@ sequenceDiagram
     participant DB as PostgreSQL + pgvector
     participant AI as Alibaba Cloud Model Studio
 
-    U->>API: 1. POST message + email + channel
+    U->>API: 1. POST message + email + channel + optional bounded history
     API->>R: 2. Save job {status: "processing"}
     API-->>U: 3. 202 Accepted + job_id (instant!)
     API->>BG: 4. Hand work to a background task
@@ -167,7 +167,7 @@ sequenceDiagram
 
 **In plain words:**
 
-1. The customer submits a message. The frontend calls `POST /api/chat`.
+1. The customer submits a message. The frontend calls `POST /api/chat`. Follow-up requests also include up to 20 previously completed customer/agent messages so retrieval can resolve conversational references.
 2. The API creates a **correlation ID** (which is also the `job_id`), saves a `"processing"` record in Redis, and **immediately returns `202 Accepted`** with that `job_id`. The customer isn't left staring at a frozen page.
 3. A **background task** runs the agent. The message is wrapped with context like `[Customer: jane@acme.com, Channel: web] How do I reset my password?`.
 4. The agent runs its workflow (identify → ticket → sentiment → search → answer → save → resolve/escalate → log).

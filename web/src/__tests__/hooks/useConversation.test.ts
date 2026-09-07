@@ -158,4 +158,199 @@ describe("useConversation", () => {
     expect(result.current.conversation.customerName).toBe("Ali");
     expect(result.current.conversation.customerEmail).toBe("ali@test.com");
   });
+
+  it("ignores updates for an unknown customer message", () => {
+    const { result } = renderHook(() => useConversation());
+
+    act(() => {
+      result.current.updateMessageStatus(
+        "missing",
+        "completed",
+        "Orphan response",
+      );
+    });
+
+    expect(result.current.conversation.messages).toEqual([]);
+    expect(result.current.conversation.isFollowUpMode).toBe(false);
+  });
+
+  it("upserts a reply when completion is delivered more than once", () => {
+    const { result } = renderHook(() => useConversation());
+    let msg: ReturnType<typeof result.current.addCustomerMessage>;
+    act(() => {
+      msg = result.current.addCustomerMessage("Help");
+      result.current.setMessageJobId(msg!.id, "job-1");
+    });
+
+    act(() => {
+      result.current.updateMessageStatus(
+        msg!.id,
+        "completed",
+        "First answer",
+        undefined,
+        {
+          job_id: "job-1",
+          status: "completed",
+          response: "First answer",
+          error: null,
+          retry_after: null,
+        },
+      );
+      result.current.updateMessageStatus(
+        msg!.id,
+        "completed",
+        "Updated answer",
+        undefined,
+        {
+          job_id: "job-1",
+          status: "completed",
+          response: "Updated answer",
+          error: null,
+          retry_after: null,
+        },
+      );
+    });
+
+    expect(result.current.conversation.messages).toHaveLength(2);
+    expect(result.current.conversation.messages[0].jobId).toBe("job-1");
+    expect(result.current.conversation.messages[1].content).toBe(
+      "Updated answer",
+    );
+    expect(result.current.conversation.messages[1].replyToId).toBe(msg!.id);
+  });
+
+  it("does not enter follow-up mode for an empty completion", () => {
+    const { result } = renderHook(() => useConversation());
+    let msg: ReturnType<typeof result.current.addCustomerMessage>;
+    act(() => {
+      msg = result.current.addCustomerMessage("Help");
+    });
+    act(() => {
+      result.current.updateMessageStatus(msg!.id, "completed", "   ");
+    });
+
+    expect(result.current.conversation.messages).toHaveLength(1);
+    expect(result.current.conversation.isFollowUpMode).toBe(false);
+  });
+
+  it("preserves citations from a completed job", () => {
+    const { result } = renderHook(() => useConversation());
+    let msg: ReturnType<typeof result.current.addCustomerMessage>;
+    act(() => {
+      msg = result.current.addCustomerMessage("Help");
+    });
+    act(() => {
+      result.current.updateMessageStatus(
+        msg!.id,
+        "completed",
+        "Grounded answer [1]",
+        undefined,
+        {
+          job_id: "job-citations",
+          status: "completed",
+          response: "Grounded answer [1]",
+          error: null,
+          retry_after: null,
+          citations: [
+            {
+              index: 1,
+              document_id: "doc-1",
+              title: "Billing",
+              excerpt: "Billing evidence",
+            },
+          ],
+        },
+      );
+    });
+
+    expect(result.current.conversation.messages[1].citations).toEqual([
+      expect.objectContaining({ document_id: "doc-1" }),
+    ]);
+  });
+
+  it("keeps a draft pending until the human review result arrives", () => {
+    const { result } = renderHook(() => useConversation());
+    let msg: ReturnType<typeof result.current.addCustomerMessage>;
+    act(() => {
+      msg = result.current.addCustomerMessage("Please refund me");
+    });
+    act(() => {
+      result.current.updateMessageStatus(
+        msg!.id,
+        "completed",
+        "Draft answer",
+        undefined,
+        {
+          job_id: "job-review",
+          status: "waiting_review",
+          response: "Draft answer",
+          error: null,
+          retry_after: null,
+          requires_human_review: true,
+          review_reason: "high_risk_request",
+        },
+      );
+    });
+
+    expect(result.current.conversation.messages[1].status).toBe(
+      "waiting_review",
+    );
+    expect(result.current.conversation.isFollowUpMode).toBe(false);
+
+    act(() => {
+      result.current.applyReviewResult({
+        job_id: "job-review",
+        status: "completed",
+        response: "Approved answer",
+        error: null,
+        retry_after: null,
+        requires_human_review: false,
+      });
+    });
+
+    expect(result.current.conversation.messages).toHaveLength(2);
+    expect(result.current.conversation.messages[1]).toEqual(
+      expect.objectContaining({
+        content: "Approved answer",
+        status: "completed",
+        requiresHumanReview: false,
+      }),
+    );
+    expect(result.current.conversation.isFollowUpMode).toBe(true);
+  });
+
+  it("replaces a rejected draft with a rejection state", () => {
+    const { result } = renderHook(() => useConversation());
+    let msg: ReturnType<typeof result.current.addCustomerMessage>;
+    act(() => {
+      msg = result.current.addCustomerMessage("Delete my account");
+      result.current.updateMessageStatus(
+        msg!.id,
+        "completed",
+        "Draft answer",
+        undefined,
+        {
+          job_id: "job-rejected",
+          status: "waiting_review",
+          response: "Draft answer",
+          error: null,
+          retry_after: null,
+          requires_human_review: true,
+        },
+      );
+    });
+    act(() => {
+      result.current.applyReviewResult({
+        job_id: "job-rejected",
+        status: "rejected",
+        response: "",
+        error: null,
+        retry_after: null,
+      });
+    });
+
+    expect(result.current.conversation.messages[1]).toEqual(
+      expect.objectContaining({ content: "", status: "rejected" }),
+    );
+  });
 });

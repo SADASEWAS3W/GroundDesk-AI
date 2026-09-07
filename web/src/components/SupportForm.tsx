@@ -13,11 +13,16 @@ import { CustomerHeader } from "./CustomerHeader";
 import { MessageInput } from "./MessageInput";
 import { StatusIndicator } from "./StatusIndicator";
 
+const MAX_HISTORY_MESSAGES = 20;
+const MAX_HISTORY_MESSAGE_LENGTH = 4000;
+
 export function SupportForm() {
   const {
     conversation,
     addCustomerMessage,
     updateMessageStatus,
+    setMessageJobId,
+    applyReviewResult,
     setCustomerInfo,
   } = useConversation();
   const { isHealthy } = useHealthCheck();
@@ -36,9 +41,15 @@ export function SupportForm() {
   const [editedAnswer, setEditedAnswer] = useState("");
 
   const handlePollComplete = useCallback(
-    (response: string) => {
+    (status: JobStatus) => {
       if (activeMessageId) {
-        updateMessageStatus(activeMessageId, "completed", response);
+        updateMessageStatus(
+          activeMessageId,
+          "completed",
+          status.response ?? undefined,
+          undefined,
+          status,
+        );
       }
       setActiveJobId(null);
       setActiveMessageId(null);
@@ -92,16 +103,26 @@ export function SupportForm() {
   ) => {
     if (!pendingReview) return;
     try {
-      await submitReview(
+      const result = await submitReview(
         pendingReview.job_id,
         action,
         action === "edit" ? editedAnswer : undefined,
       );
+      if (
+        result.status === "completed" &&
+        !result.response?.trim()
+      ) {
+        throw new Error("The reviewed response was empty.");
+      }
+      applyReviewResult(result);
       setPendingReview(null);
+      setError(null);
+      setLastSubmission(null);
+      startCooldown();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Review failed");
     }
-  }, [pendingReview, editedAnswer]);
+  }, [pendingReview, editedAnswer, applyReviewResult, startCooldown]);
 
   const handleSubmit = useCallback(
     async (name: string, email: string, messageText: string) => {
@@ -120,12 +141,33 @@ export function SupportForm() {
       updateMessageStatus(msg.id, "processing");
 
       try {
+        const completedReplyIds = new Set(
+          conversation.messages
+            .filter(
+              (item) => item.role === "agent" && item.status === "completed",
+            )
+            .map((item) => item.replyToId)
+            .filter((id): id is string => Boolean(id)),
+        );
+        const history = conversation.messages
+          .filter(
+            (item) =>
+              item.status === "completed" &&
+              (item.role === "agent" || completedReplyIds.has(item.id)),
+          )
+          .slice(-MAX_HISTORY_MESSAGES)
+          .map((item) => ({
+            role: item.role,
+            content: item.content.slice(0, MAX_HISTORY_MESSAGE_LENGTH),
+          }));
         const job = await submitChat({
           name,
           email,
           message: messageText,
           channel: "web",
+          ...(history.length > 0 ? { history } : {}),
         });
+        setMessageJobId(msg.id, job.job_id);
         setActiveJobId(job.job_id);
       } catch (err) {
         const errMsg =
@@ -141,6 +183,8 @@ export function SupportForm() {
       setCustomerInfo,
       addCustomerMessage,
       updateMessageStatus,
+      setMessageJobId,
+      conversation.messages,
     ],
   );
 
@@ -173,7 +217,7 @@ export function SupportForm() {
     }
   }, [lastSubmission, handleSubmit]);
 
-  const isProcessing = isSubmitting || isPolling;
+  const isProcessing = isSubmitting || isPolling || pendingReview !== null;
 
   return (
     <div className="flex flex-col gap-4">

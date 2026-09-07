@@ -48,6 +48,14 @@ describe("Submit flow integration", () => {
         response: "Here is your answer with **bold**",
         error: null,
         retry_after: null,
+        citations: [
+          {
+            index: 1,
+            document_id: "doc-1",
+            title: "Account access",
+            excerpt: "Reset instructions",
+          },
+        ],
       });
 
     render(<SupportForm />);
@@ -93,6 +101,7 @@ describe("Submit flow integration", () => {
     await waitFor(() => {
       expect(screen.getByText(/Here is your answer/)).toBeInTheDocument();
     });
+    expect(screen.getByText("[1] Account access")).toBeInTheDocument();
   });
 
   it("shows error when submitChat fails", async () => {

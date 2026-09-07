@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import type { Conversation, Message } from "@/lib/types";
-import type { JobStatus } from "@/lib/types";
+import type { Conversation, JobStatus, Message } from "@/lib/types";
 
 const initialConversation: Conversation = {
   messages: [],
@@ -40,35 +39,108 @@ export function useConversation() {
       error?: string,
       result?: JobStatus,
     ) => {
+      const responseContent = response?.trim();
+      const replyId = responseContent ? crypto.randomUUID() : undefined;
+      const replyTimestamp = responseContent ? new Date() : undefined;
+
       setConversation((prev) => {
-        const messages = prev.messages.map((msg) =>
-          msg.id === id ? { ...msg, status, error } : msg,
+        const customerMessage = prev.messages.find(
+          (message) => message.id === id && message.role === "customer",
+        );
+        if (!customerMessage) return prev;
+
+        const isWaitingReview = result?.status === "waiting_review";
+        const jobId = result?.job_id ?? customerMessage.jobId;
+        const messages = prev.messages.map((message) =>
+          message.id === id
+            ? { ...message, status, error, jobId }
+            : message,
         );
 
-        // When a customer message completes, append the agent response
-        if (status === "completed" && response) {
+        // Upsert the reply so repeated completion callbacks stay idempotent.
+        if (status === "completed" && responseContent) {
           const agentMessage: Message = {
-            id: crypto.randomUUID(),
+            id: replyId!,
             role: "agent",
-            content: response,
-            timestamp: new Date(),
-            status: "completed",
+            content: responseContent,
+            timestamp: replyTimestamp!,
+            status: isWaitingReview ? "waiting_review" : "completed",
+            jobId,
+            replyToId: id,
             citations: result?.citations,
             requiresHumanReview: result?.requires_human_review,
             reviewReason: result?.review_reason,
           };
-          messages.push(agentMessage);
+          const existingReplyIndex = messages.findIndex(
+            (message) => message.role === "agent" && message.replyToId === id,
+          );
+          if (existingReplyIndex >= 0) {
+            messages[existingReplyIndex] = {
+              ...messages[existingReplyIndex],
+              ...agentMessage,
+              id: messages[existingReplyIndex].id,
+              timestamp: messages[existingReplyIndex].timestamp,
+            };
+          } else {
+            messages.push(agentMessage);
+          }
         }
 
+        const hasFinalResponse =
+          status === "completed" && Boolean(responseContent) && !isWaitingReview;
         return {
           ...prev,
           messages,
-          isFollowUpMode: prev.isFollowUpMode || status === "completed",
+          isFollowUpMode: prev.isFollowUpMode || hasFinalResponse,
         };
       });
     },
     [],
   );
+
+  const setMessageJobId = useCallback((id: string, jobId: string) => {
+    setConversation((prev) => {
+      if (!prev.messages.some((message) => message.id === id)) return prev;
+      return {
+        ...prev,
+        messages: prev.messages.map((message) =>
+          message.id === id ? { ...message, jobId } : message,
+        ),
+      };
+    });
+  }, []);
+
+  const applyReviewResult = useCallback((result: JobStatus) => {
+    if (result.status !== "completed" && result.status !== "rejected") return;
+
+    setConversation((prev) => {
+      const replyIndex = prev.messages.findIndex(
+        (message) =>
+          message.role === "agent" && message.jobId === result.job_id,
+      );
+      if (replyIndex < 0) return prev;
+
+      const existingReply = prev.messages[replyIndex];
+      const messages = [...prev.messages];
+      messages[replyIndex] = {
+        ...existingReply,
+        content:
+          result.status === "rejected"
+            ? ""
+            : result.response?.trim() || existingReply.content,
+        status: result.status,
+        citations: result.citations,
+        requiresHumanReview: false,
+        reviewReason: result.review_reason,
+      };
+
+      return {
+        ...prev,
+        messages,
+        isFollowUpMode: true,
+      };
+    });
+  }, []);
 
   const setCustomerInfo = useCallback((name: string, email: string) => {
     setConversation((prev) => ({
@@ -78,5 +150,12 @@ export function useConversation() {
     }));
   }, []);
 
-  return { conversation, addCustomerMessage, updateMessageStatus, setCustomerInfo };
+  return {
+    conversation,
+    addCustomerMessage,
+    updateMessageStatus,
+    setMessageJobId,
+    applyReviewResult,
+    setCustomerInfo,
+  };
 }

@@ -10,7 +10,7 @@ const DEFAULT_RETRY_AFTER_MS = 5000;
 
 export function useJobPolling(
   jobId: string | null,
-  onComplete: (response: string) => void,
+  onComplete: (status: JobStatus) => void,
   onError: (error: string) => void,
   onReview?: (status: JobStatus) => void,
 ) {
@@ -80,17 +80,28 @@ export function useJobPolling(
 
         if (cancelled) return;
 
-        if (status.status === "completed" && status.response) {
+        if (status.status === "completed") {
           cleanup();
-          onCompleteRef.current(status.response);
+          if (status.response?.trim()) {
+            onCompleteRef.current(status);
+          } else {
+            onErrorRef.current("The completed request returned an empty response.");
+          }
         } else if (status.status === "waiting_review") {
           cleanup();
-          onReviewRef.current?.(status);
+          if (onReviewRef.current) {
+            onReviewRef.current(status);
+          } else {
+            onErrorRef.current("This response requires human review.");
+          }
         } else if (status.status === "failed") {
           cleanup();
           onErrorRef.current(
             status.error ?? "An error occurred while processing your request.",
           );
+        } else if (status.status === "rejected") {
+          cleanup();
+          onErrorRef.current("The response was rejected during human review.");
         } else {
           // Still processing — schedule next poll
           const delay = status.retry_after

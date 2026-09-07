@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Query, Request
@@ -29,11 +30,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class ChatHistoryMessage(BaseModel):
+    role: Literal["customer", "agent"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class ChatRequest(BaseModel):
     message: str
     email: str
     channel: str = "web"
     name: str | None = None
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 
 class ChatResponse(BaseModel):
@@ -144,6 +151,22 @@ async def _run_workflow(job_id: str, message: str, ctx) -> dict:
     }
 
 
+def _format_chat_message(req: ChatRequest) -> str:
+    """Build bounded conversation context for the agent and retrieval query."""
+    current_message = req.message
+    if req.history:
+        history = json.dumps(
+            [item.model_dump() for item in req.history],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        current_message = (
+            f"Previous conversation (JSON): {history}\n"
+            f"Current customer message: {req.message}"
+        )
+    return f"[Customer: {req.email}, Channel: {req.channel}] {current_message}"
+
+
 async def _process_chat(job_id: str, message: str, ctx) -> None:
     """Run the agent in the background and store the result as a job."""
     set_correlation_id(job_id)
@@ -246,13 +269,13 @@ async def chat(
     logger.info("Chat request — email=%s channel=%s", req.email, req.channel)
 
     ctx = request.app.state.agent_ctx
-    message = f"[Customer: {req.email}, Channel: {req.channel}] {req.message}"
+    message = _format_chat_message(req)
 
     # Sync mode: explicit ?sync=true OR graceful fallback when Redis is unavailable
     if sync or ctx.redis_client is None:
         if ctx.redis_client is None and not sync:
             logger.warning("Redis unavailable — falling back to sync mode")
-        result = await _run_workflow(cid, req.message, ctx)
+        result = await _run_workflow(cid, message, ctx)
         return ChatResponse(correlation_id=cid, **result)
 
     # Async mode (default)

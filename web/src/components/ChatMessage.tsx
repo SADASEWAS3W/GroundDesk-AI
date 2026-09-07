@@ -11,6 +11,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const isCustomer = message.role === "customer";
   const isProcessing = message.status === "processing";
   const isFailed = message.status === "failed";
+  const isRejected = message.status === "rejected";
 
   const timestamp = new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
@@ -38,6 +39,10 @@ export function ChatMessage({ message }: ChatMessageProps) {
         ) : isFailed ? (
           <p className={`text-sm ${isCustomer ? "text-red-200" : "text-red-600"}`}>
             {message.error ?? "Failed to get a response. Please try again."}
+          </p>
+        ) : isRejected && !isCustomer ? (
+          <p className="text-sm text-red-600">
+            Response rejected by the human reviewer.
           </p>
         ) : isCustomer ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>

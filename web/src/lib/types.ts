@@ -4,12 +4,24 @@ export interface Message {
   role: "customer" | "agent";
   content: string;
   timestamp: Date;
-  status: "sent" | "processing" | "completed" | "failed";
+  status:
+    | "sent"
+    | "processing"
+    | "waiting_review"
+    | "completed"
+    | "failed"
+    | "rejected";
   jobId?: string;
+  replyToId?: string;
   error?: string;
   citations?: Citation[];
   requiresHumanReview?: boolean;
   reviewReason?: string | null;
+}
+
+export interface ChatHistoryMessage {
+  role: "customer" | "agent";
+  content: string;
 }
 
 // Ordered collection of messages for the current session
@@ -26,6 +38,7 @@ export interface ChatRequest {
   email: string;
   message: string;
   channel: "web";
+  history?: ChatHistoryMessage[];
 }
 
 // POST /api/chat response (HTTP 202)
