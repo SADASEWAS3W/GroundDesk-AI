@@ -18,7 +18,7 @@ web -> api -> agent/application -> retrieval/tools -> database/cache/model provi
 - 优先增加职责单一的模块，避免持续扩大 `api/main.py` 或 `agent/customer_success_agent.py`。
 - 共享契约只能有一个权威定义，其他层通过显式适配器使用。
 - 除配置元数据外，领域模型不得依赖具体模型供应商名称。
-- 跨层修改必须执行 API 契约检查并记录端到端验证结果。
+- 跨层修改必须执行 API 契约检查并记录端到端验证结果；按 `verification-rules.md` 纳入整项任务的最终验证，不要求逐阶段重复执行。
 
 ## 二次开发目标结构
 

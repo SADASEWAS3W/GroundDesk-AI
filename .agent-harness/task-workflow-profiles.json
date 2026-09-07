@@ -1,5 +1,16 @@
 {
-  "version": 1,
+  "version": 2,
+  "verificationPolicy": {
+    "scope": "user-task",
+    "trigger": "after-all-implementation-phases-before-final-delivery",
+    "perPhaseRequired": false,
+    "deduplicateGates": true,
+    "gateCoverage": {"compose-full": ["compose"]},
+    "failureRerunScope": "failed-and-affected-checks",
+    "invalidateAffectedResultsOnChange": true,
+    "safetyPreconditions": "before-operation",
+    "rules": "rules/verification-rules.md"
+  },
   "lanes": {
     "L0": "只分析、写文档、重复任务或因输入不足而阻塞，不修改运行时代码",
     "L1": "局部低风险 UI、文案、文档或仅测试改动",

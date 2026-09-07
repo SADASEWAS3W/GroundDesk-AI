@@ -4,20 +4,23 @@
 
 ## 修改代码前
 
-1. 阅读 `.agent-harness/rules/architecture-rules.md` 以及本次改动涉及领域的规则。
+1. 阅读 `.agent-harness/rules/architecture-rules.md`、`.agent-harness/rules/verification-rules.md` 以及本次改动涉及领域的规则。
 2. 使用 `.agent-harness/task-workflow-profiles.json` 判断任务类型和风险等级。
 3. 按照 `.agent-harness/workflows/` 中对应的工作流执行。
 
-## 修改代码后
+## 分阶段实施与最终验证
 
-1. 执行任务配置要求的专项检查。
-2. 提交前运行：
+1. 同一用户任务可以拆为多个实现阶段。阶段结束只记录进展、变更范围和待验证项，不要求每阶段运行测试、专项检查或完整 Harness。
+2. 所有阶段的代码、测试代码和文档修改完成后，在最终交付前统一执行一轮验证；合并任务涉及的 Profile 门禁与专项验收项，去重执行。
+3. 提交前所需的统一入口也安排在这轮最终验证中，不在各阶段重复运行：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1
    ```
 
-3. 如有检查未执行，必须说明原因、剩余风险和后续动作。
+4. 排障时可以按需运行最小检查，但不能把阶段检查变成固定流程。破坏性操作前的目标核对、备份、授权及运行时安全校验不得推迟。
+5. 验证失败后只补跑失败项及修复影响到的检查；最终验证后有新改动时，相关结果失效，必须补验。没有新改动时不因汇报或提交重复整轮验证。
+6. 阶段内未运行的检查标记为“待最终验证”，不能声称已通过。最终仍未执行的检查必须说明原因、剩余风险和后续动作。
 
 ## 仓库级强制约束
 
@@ -33,6 +36,7 @@
 ## 规则索引
 
 - `.agent-harness/rules/architecture-rules.md`
+- `.agent-harness/rules/verification-rules.md`（验证时机的统一规则，适用于所有 Profile 和工作流）
 - `.agent-harness/rules/agent-rules.md`
 - `.agent-harness/rules/rag-rules.md`
 - `.agent-harness/rules/api-contract-rules.md`

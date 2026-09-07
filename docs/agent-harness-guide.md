@@ -7,9 +7,9 @@
 三层架构不是 Web、Service、Database 这类业务代码分层，而是覆盖整个开发过程的工程治理体系：
 
 ```text
-第 1 层：规范约束层——规定代码应该怎么写
-第 2 层：工作流编排层——规定不同任务至少要做什么
-第 3 层：自动验证层——证明改动是否满足质量要求
+第 1 层：规范约束层——规定设计约束与任务级最终验证规则
+第 2 层：工作流编排层——分阶段实现，汇总并去重验收项
+第 3 层：自动验证层——全部阶段完成后统一验证一次
 ```
 
 ## 2. 目录结构
@@ -21,6 +21,7 @@ AGENTS.md                              # Agent/Codex 统一入口
 ├── task-workflow-profiles.json        # 任务 Profile、Lane 和门禁映射
 ├── rules/                             # 第 1 层：规范约束
 │   ├── architecture-rules.md
+│   ├── verification-rules.md          # 整项任务末尾统一验证
 │   ├── agent-rules.md
 │   ├── rag-rules.md
 │   ├── api-contract-rules.md
@@ -110,6 +111,21 @@ API 字段变化必须同步修改：
 
 第二层解决“这次任务至少要做到什么程度”的问题。
 
+### 4.0 任务级验证时机
+
+同一个用户目标可拆成多个实现阶段，但阶段不是独立的验收轮次。默认流程为：
+
+```text
+确定任务/Profile → 阶段一实现 → 阶段二实现 → …… → 完成测试代码与文档
+→ 合并并去重全部验收项 → 一轮最终验证 → 交付
+```
+
+阶段内编写测试、记录变更和待验证项，不要求阶段结束即运行测试、完整 Harness、数据库集成或真实模型评测。阶段汇报应写“已实现，待最终验证”，不能写成已验证通过。多个阶段共享同一份任务台账及最终报告。
+
+验证时机以 `.agent-harness/rules/verification-rules.md` 为准，`task-workflow-profiles.json` 的 `verificationPolicy` 记录对应编排配置。配置由 Agent/开发者遵循，不会自动启动后台任务，也不改变脚本的显式调用方式。
+
+排障可按需做最小复现；用户明确要求的中途测试仍执行。危险操作前的目标核对、授权、备份与运行时安全校验不能延后。失败修复仅补验失败项和受影响项；最终验证后若有新改动，相应结果失效，必须补验。独立提交、发布或部署之前仍需满足对应门禁，不能以统一验证为由先上线再补测。
+
 ### 4.1 Lane 风险分级
 
 | Lane | 使用场景 | 最低要求 |
@@ -136,46 +152,48 @@ API 字段变化必须同步修改：
 | 更换模型供应商 | `model-provider-change` | L3 |
 | 正式发布 | `release` | L3 |
 
-具体映射和必跑门禁以 `.agent-harness/task-workflow-profiles.json` 为准。
+具体映射和必跑门禁以 `.agent-harness/task-workflow-profiles.json` 为准。一次任务涉及多个 Profile 时，累计所有验收要求，在末尾按集合去重执行，而不是每个 Profile 或每个阶段各跑一轮。
 
 ### 4.3 五类工作流
 
 #### Bug 修复
 
 ```text
-复现 → 定位 → 风险定级 → 回归测试 → 最小修复 → 验证 → 记录根因
+最小复现 → 定位 → 风险定级 → 编写回归测试 → 完成全部修复与文档 → 最终统一验证
 ```
 
 #### 功能开发
 
 ```text
-目标与非目标 → 契约 → Lane → 接口与测试 → 分层实现 → E2E → 文档
+目标与非目标 → 契约 → Lane → 接口与测试代码 → 全部分层实现与文档 → 最终统一验证（含 E2E）
 ```
 
 #### RAG/Agent 变更
 
 ```text
-模型与向量契约 → 检索接口 → 测试 → 数据/缓存迁移
-→ Retrieval Eval → Agent Eval → 真实模型最小验证
+模型与向量契约 → 检索接口 → 测试/评测数据 → 完成实现与迁移方案
+→ 最终统一验证（Retrieval Eval + Agent Eval + 已授权真实模型测试 + 门禁）
 ```
 
 #### API 契约变更
 
 ```text
 新旧契约 → 后端模型 → 前端类型/API Client
-→ 两端测试 → OpenAPI → Compose 验证
+→ 两端测试代码与文档 → 最终统一验证（两端测试 + OpenAPI + Compose）
 ```
 
 #### 数据库迁移
 
 ```text
-影响与回滚 → 备份 → 新迁移 → 空库测试
-→ 旧版本升级测试 → 完整性检查 → Compose 验证
+影响与回滚 → 安全前置条件 → 新迁移与测试代码/文档
+→ 最终统一验证（隔离空库 + 旧版本升级 + 完整性 + Compose）
 ```
 
 ## 5. 第三层：自动验证层
 
 第三层解决“如何证明修改安全”的问题。
+
+下面列出各检查的独立入口，便于组合最终验证计划或排障，并不要求每阶段依次执行。选用统一入口时，不应先逐个运行它已覆盖的门禁。所有必要检查集中在任务结束的一轮中；该轮允许包含多个不同的命令。
 
 ### 5.1 密钥扫描
 
@@ -250,7 +268,7 @@ powershell -ExecutionPolicy Bypass -File scripts/harness/verify-compose.ps1 -Ful
 
 ## 6. 统一执行入口
 
-日常开发建议执行：
+需要完整统一门禁的任务，在全部实现阶段、测试代码和文档完成后执行一次：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerForTests
@@ -267,11 +285,15 @@ powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerF
 → Compose 配置检查
 ```
 
-L3 或发布前执行：
+需要完整构建与健康检查的 L3 或发布任务，在同一最终轮次改用以下命令，不再重复运行上面的普通入口：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerForTests -FullDocker
 ```
+
+仅分析/文档任务按 `documentation` 的门禁在末尾做适用检查，不因内部有多个阶段而运行无关后端、前端或付费评测。提交前另有统一门禁要求时，将统一入口直接纳入最终计划，避免专项门禁与统一入口重复执行。
+
+`run-all.ps1` 不会执行所有领域专项验收，例如真实模型 Retrieval Eval、Agent Eval、隔离数据库升级/回滚检查。这些在适用且具备授权时加入同一最终轮次。多个 Profile 重复要求同一项时只跑一次，`compose-full` 覆盖 `compose`。
 
 ## 7. 二次开发示例
 
@@ -282,7 +304,7 @@ powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerF
 3. 修改后端响应模型。
 4. 修改前端 TypeScript 类型和 API Client。
 5. 增加后端和前端集成测试。
-6. 运行统一门禁。
+6. 全部阶段和文档完成后，统一运行一轮契约专项检查与门禁。
 
 如果 Citation 同时改变生成、Grounding 或人工审核逻辑，应升级为 L3。
 
@@ -292,8 +314,8 @@ powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerF
 2. 先定义 Vector、BM25、Fusion 和 Reranker 接口。
 3. 保留现有 pgvector 作为一路召回。
 4. 增加 Retrieval Eval 基线。
-5. 对比 Recall@3 和 MRR。
-6. 执行全部门禁和端到端演示。
+5. 完成全部实现、测试代码与文档，汇总最终验证计划。
+6. 在同一最终轮次对比 Recall@3、MRR，执行去重后的门禁和端到端演示。
 
 ### 示例三：更换 Embedding 模型
 
@@ -302,18 +324,20 @@ powershell -ExecutionPolicy Bypass -File scripts/harness/run-all.ps1 -UseDockerF
 3. 设计全量知识库向量重建方案。
 4. 升级 Redis 检索缓存命名空间。
 5. 准备数据库备份和回滚方案。
-6. 重新评估检索阈值。
-7. 执行 Retrieval Eval、后端测试和完整 Compose 门禁。
+6. 完成实现、测试代码及文档，准备阈值评估方案。
+7. 在最终轮次统一执行 Retrieval Eval、阈值评估、后端测试和完整 Compose 门禁。
 
 ## 8. 验证报告
 
-每个 L2/L3 任务建议按 `.agent-harness/templates/verification-report.md` 记录：
+每个 L2/L3 完整任务建议在最终验证后按 `.agent-harness/templates/verification-report.md` 汇总一次，无需每阶段生成报告。记录：
 
 - 任务 Profile 和 Lane。
+- 包含的实现阶段、最终验证对应的版本/变更范围、去重后的检查计划。
 - 修改范围与契约变化。
 - 数据迁移情况。
 - 通过的测试与门禁。
 - 跳过的检查及原因。
+- 验证失败后的修复及受影响项补验结果。
 - 真实模型验证。
 - 已知限制和回滚方法。
 
@@ -336,12 +360,12 @@ Agent Harness 负责约束这些功能如何安全落地：
 Agent Harness：决定怎么做、做到什么程度、如何证明完成
 ```
 
-建议后续每个功能阶段都先选择 Profile 和 Lane，再按 Harness 工作流实施。
+在整个任务开始时选择 Profile 和 Lane，阶段内范围扩大时累计新的验收要求；不把每个功能阶段当作一次新的完整验证任务。执行计划中的分阶段“测试/验收项”用于最终汇总，不构成逐阶段测试的硬性门槛。
 
 ## 10. 维护规则
 
 - 新增重要架构约束时更新 `rules/`，不要只写在聊天记录中。
 - 出现重复开发流程时再新增 Workflow，避免工作流数量无序增长。
 - 自动检查必须尽量无副作用，不能写入业务数据或泄露密钥。
-- 修改门禁脚本时必须先在当前仓库基线上验证，避免大量误报。
+- 修改门禁脚本时先记录当前仓库基线、准备误报/漏报回归场景，任务末尾统一验证这些场景，避免每阶段重复跑门禁。
 - 规则、工作流和脚本发生变化时同步更新本文档。
