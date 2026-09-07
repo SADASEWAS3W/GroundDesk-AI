@@ -2,7 +2,8 @@ import { renderHook, act } from "@testing-library/react";
 import { useJobPolling } from "@/hooks/useJobPolling";
 import * as api from "@/lib/api";
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
   getJobStatus: vi.fn(),
 }));
 
@@ -49,7 +50,10 @@ describe("useJobPolling", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
 
-    expect(mockedGetJobStatus).toHaveBeenCalledWith("job-1");
+    expect(mockedGetJobStatus).toHaveBeenCalledWith(
+      "job-1",
+      expect.any(AbortSignal),
+    );
     expect(onComplete).toHaveBeenCalledWith(
       expect.objectContaining({ response: "Done!" }),
     );
@@ -160,9 +164,9 @@ describe("useJobPolling", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
-    // 3rd attempt — gives up
+    // Exponential backoff doubles the second retry delay to 10 seconds.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(10000);
     });
 
     expect(onError).toHaveBeenCalledWith(
@@ -260,6 +264,110 @@ describe("useJobPolling", () => {
     );
   });
 
+  it("polls immediately when retry_after is zero", async () => {
+    mockedGetJobStatus
+      .mockResolvedValueOnce({
+        job_id: "job-zero",
+        status: "processing",
+        response: null,
+        error: null,
+        retry_after: 0,
+      })
+      .mockResolvedValueOnce({
+        job_id: "job-zero",
+        status: "completed",
+        response: "Done",
+        error: null,
+        retry_after: null,
+      });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("job-zero", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(mockedGetJobStatus).toHaveBeenCalledTimes(2);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Done" }),
+    );
+  });
+
+  it("fails immediately for a non-retryable client error", async () => {
+    mockedGetJobStatus.mockRejectedValueOnce(
+      new api.ApiError("Job not found", 404),
+    );
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("missing-job", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(mockedGetJobStatus).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith("Job not found");
+  });
+
+  it("retries a timed-out request and aborts its fetch", async () => {
+    let firstSignal: AbortSignal | undefined;
+    mockedGetJobStatus
+      .mockImplementationOnce((_jobId, signal) => {
+        firstSignal = signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      })
+      .mockResolvedValueOnce({
+        job_id: "job-slow",
+        status: "completed",
+        response: "Recovered",
+        error: null,
+        retry_after: null,
+      });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("job-slow", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(15000);
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+
+    expect(firstSignal?.aborted).toBe(true);
+    expect(onComplete).toHaveBeenCalledWith(
+      expect.objectContaining({ response: "Recovered" }),
+    );
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("enforces the overall deadline while a fetch is still pending", async () => {
+    let signal: AbortSignal | undefined;
+    mockedGetJobStatus.mockImplementationOnce((_jobId, requestSignal) => {
+      signal = requestSignal;
+      return new Promise(() => undefined);
+    });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    renderHook(() => useJobPolling("job-hung", onComplete, onError));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    });
+
+    expect(signal?.aborted).toBe(true);
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      "Request timed out. Please try again.",
+    );
+  });
+
   it("times out after 5 minutes", async () => {
     mockedGetJobStatus.mockResolvedValue({
       job_id: "job-1",
@@ -315,5 +423,27 @@ describe("useJobPolling", () => {
     });
 
     expect(mockedGetJobStatus.mock.calls.length).toBe(callCount);
+  });
+
+  it("aborts an in-flight status request on unmount", async () => {
+    let signal: AbortSignal | undefined;
+    mockedGetJobStatus.mockImplementationOnce((_jobId, requestSignal) => {
+      signal = requestSignal;
+      return new Promise(() => undefined);
+    });
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+
+    const { unmount } = renderHook(() =>
+      useJobPolling("job-pending", onComplete, onError),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    unmount();
+
+    expect(signal?.aborted).toBe(true);
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
   });
 });

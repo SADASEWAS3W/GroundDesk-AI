@@ -1,4 +1,4 @@
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SupportForm } from "@/components/SupportForm";
 import * as api from "@/lib/api";
@@ -164,6 +164,46 @@ describe("Submit flow integration", () => {
     await waitFor(() => {
       const errors = screen.getAllByText("Agent processing failed");
       expect(errors.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it("ignores a second submit while the first submission is still active", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let resolveSubmission: ((value: {
+      job_id: string;
+      status: "processing";
+      retry_after: number;
+    }) => void) | undefined;
+    mockedSubmitChat.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmission = resolve;
+        }),
+    );
+    render(<SupportForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Connected")).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText("Name"), "Ali");
+    await user.type(screen.getByLabelText("Email"), "ali@test.com");
+    await user.type(screen.getByLabelText("Message"), "Help");
+    const form = screen.getByRole("button", { name: "Send Message" }).closest(
+      "form",
+    );
+    expect(form).not.toBeNull();
+
+    fireEvent.submit(form!);
+    fireEvent.submit(form!);
+
+    expect(mockedSubmitChat).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSubmission?.({
+        job_id: "job-locked",
+        status: "processing",
+        retry_after: 2,
+      });
     });
   });
 });

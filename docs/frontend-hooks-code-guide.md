@@ -180,7 +180,7 @@ handleSubmit(
 ```ts
 export function useJobPolling(
   jobId: string | null,
-  onComplete: (response: string) => void,
+  onComplete: (status: JobStatus) => void,
   onError: (error: string) => void,
   onReview?: (status: JobStatus) => void,
 )
@@ -191,8 +191,10 @@ export function useJobPolling(
 | 配置 | 当前值 |
 |---|---|
 | TIMEOUT_MS | 5 分钟 |
+| REQUEST_TIMEOUT_MS | 单次状态请求 15 秒 |
 | MAX_NETWORK_RETRIES | 连续 3 次查询异常后结束 |
 | DEFAULT_RETRY_AFTER_MS | 5 秒 |
+| MAX_RETRY_DELAY_MS | 网络重试最多等待 30 秒 |
 
 常量名包含 retries，但真实行为是第 3 次连续失败就终止，不是首次失败后再额外重试 3 次。
 
@@ -200,28 +202,28 @@ export function useJobPolling(
 
 Effect 依赖为 `[jobId, cleanup]`。`jobId` 为空时重置 elapsed 并返回；有 ID 时清零本次失败计数、记录开始时间并设为轮询中。
 
-任务改变时，React 先执行旧 Effect 的清理，再建立新 Effect。每一轮 Effect 的 `cancelled` 和 `networkFailures` 是各自闭包中的变量，不会随普通重新渲染自动清零。
+任务改变时，React 先执行旧 Effect 的清理，再建立新 Effect。每一轮 Effect 的 `stopped` 和 `networkFailures` 是各自闭包中的变量，不会随普通重新渲染自动清零。清理还会中止旧任务正在执行的状态请求。
 
-### 3.3 两种定时器承担不同职责
+### 3.3 定时器与请求控制
 
 网络查询使用递归 setTimeout：
 
 ```ts
 function schedulePoll(delayMs: number) {
-  if (cancelled) return;
+  if (stopped) return;
   timerRef.current = setTimeout(poll, delayMs);
 }
 ```
 
 首次固定等待 5 秒。请求完成且仍需等待时，再安排下一次。真实请求间隔约为“上一次请求耗时 + 指定等待时间”，不是固定节拍。
 
-这样同一个有效轮询周期内不因请求慢而叠加查询。但切换 job 时，没有真正取消旧 fetch，旧请求仍可能与新任务请求同时在途。
+每次请求创建独立的 `AbortController`。单次请求达到 15 秒、任务达到 5 分钟、任务切换或组件卸载时，都会中止当前请求。独立的 5 分钟定时器保证即使 fetch 一直没有返回，轮询也会按时结束。
 
 另一个 setInterval 每秒刷新显示用 elapsed：
 
 ```ts
-const secs = Math.floor((Date.now() - startTimeRef.current) / 1000);
-setElapsed(secs);
+const seconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
+setElapsed(Math.min(seconds, TIMEOUT_MS / 1000));
 ```
 
 用实际时间差而非每次简单加一，有助于避免定时器延迟导致累计计时偏差；后台标签页的定时器仍可能被浏览器节流。
@@ -235,7 +237,7 @@ onCompleteRef.current = onComplete;
 
 普通渲染可能产生新的 `handlePollComplete`，它捕获最新 `activeMessageId`。如果定时器始终调用首次渲染的回调，可能操作旧消息；如果把变化的回调直接作为 Effect 依赖，又可能反复重启轮询和计时。
 
-当前代码每次渲染更新 ref，定时器通过 `onCompleteRef.current(...)` 调用最新版本，使回调更新与轮询生命周期分离。onError、onReview 使用相同方式。
+当前代码在一个独立 Effect 中更新 ref，定时器通过 `onCompleteRef.current(...)` 调用最新版本，使回调更新与轮询生命周期分离。onError、onReview 使用相同方式。
 
 `useRef` 也保存定时器句柄和起始时间，因为这些值需要跨渲染保留，但修改它们本身无需触发界面渲染。
 
@@ -243,49 +245,51 @@ onCompleteRef.current = onComplete;
 
 | 分支 | 行为 |
 |---|---|
-| cancelled | 直接返回 |
-| 开始查询前已经达到 5 分钟 | cleanup，调用超时错误回调 |
-| completed 且 response 非空 | cleanup，调用 onComplete(response) |
+| stopped | 直接返回 |
+| 整体达到 5 分钟 | 中止在途请求并调用超时错误回调 |
+| completed 且 response 非空 | cleanup，调用 onComplete(status) |
+| completed 但 response 为空 | cleanup，调用空回答错误回调 |
 | waiting_review | cleanup，调用可选 onReview(status) |
 | failed | cleanup，调用 onError，优先使用后端 error |
+| rejected | cleanup，调用审核拒绝错误回调 |
 | 其他状态 | 按 retry_after 或默认 5 秒继续查询 |
-| 查询抛错 | 累计失败，未到 3 次则等 5 秒重试，否则停止 |
+| 408、429、5xx、网络错误或单次超时 | 累计失败并按 5 秒、10 秒指数退避，连续第 3 次失败后停止 |
+| 其他 4xx | 立即停止并显示 API 返回的错误 |
 
 查询成功时，无论仍在 processing 还是已经结束，都会将连续失败次数清零。
 
 `retry_after` 的处理代码：
 
 ```ts
-const delay = status.retry_after
-  ? status.retry_after * 1000
+const delay = status.retry_after !== null && status.retry_after !== undefined
+  ? Math.max(0, status.retry_after * 1000)
   : DEFAULT_RETRY_AFTER_MS;
 ```
 
-秒转换为毫秒，采用真值判断，因此值为 0 时也会使用默认 5 秒。提交接口返回的首次 `retry_after` 没有传入该 Hook；首次仍固定 5 秒。
+秒转换为毫秒，并显式区分空值，所以 `retry_after: 0` 会立即安排下一轮。提交接口返回的首次 `retry_after` 没有传入该 Hook；首次仍固定 5 秒。
 
 ### 3.6 清理和取消
 
-`cleanup()` 清除 timeout、interval，将对应 ref 置空，并设 `isPolling = false`。终态和超时、连续失败会调用它。
+`cleanup()` 清除轮询、整体截止、单次请求和 elapsed 定时器，中止在途请求，将对应 ref 置空，并设 `isPolling = false`。终态、超时、不可重试错误和连续失败都会调用它。
 
-Effect 返回的清理函数还设置取消标记：
+Effect 返回的清理函数先设置停止标记，再统一清理：
 
 ```ts
 return () => {
-  cancelled = true;
+  stopped = true;
   cleanup();
 };
 ```
 
-异步请求返回后会检查 cancelled，旧结果不会继续调用业务回调。但没有 AbortController，不能宣称请求已经被物理取消。
+即使底层 mock 或异常环境没有响应 abort，异步请求返回后也会检查 `stopped`，旧结果不会继续调用业务回调。
 
 ### 3.7 超时和异常的实际边界
 
-- 5 分钟是在下一次 poll 开始前检查，不是独立的强制截止计时器；长时间挂起的 fetch 不会因此立即中断。
-- API 客户端会对非成功 HTTP 状态抛错，Hook 的 catch 将这类错误和网络异常一起统计；当前不区分 404、401、500 等。
-- `JobStatus` 类型包含 rejected，但轮询没有对应终态分支；收到它会进入默认的继续轮询分支。
-- completed 但回答为空时也会继续查询。
+- `getJobStatus` 通过 `ApiError.status` 保留 HTTP 状态；408、429 和 5xx 可重试，其他 4xx 立即失败。
+- 单次请求超时和总任务超时分别是 15 秒与 5 分钟；前者进入网络重试，后者直接结束任务。
+- 指数退避只用于请求异常；服务端正常返回 processing 时仍遵守 `retry_after`。
 - waiting_review 即使未提供 onReview，也会停止轮询；调用方应传入处理器。
-- 回调也在 try 块中，如果调用方回调抛错，可能被计入查询异常；当前假定业务回调不会抛出异常。
+- Hook 一次只管理一个 job。`SupportForm` 用同步 ref 锁阻止任务结束前的重复提交，避免新任务覆盖当前任务；如产品需要并行任务，应把状态提升为按 job ID 管理的集合。
 
 ## 4. useHealthCheck：挂载时的一次连接检查
 
@@ -426,7 +430,7 @@ MessageInput 还检查非空和最大长度，Enter 提交、Shift+Enter 换行�
 | Hook | 已有测试场景 | 主要方法 |
 |---|---|---|
 | useConversation | 初始状态、消息字段、追加顺序、状态更新、Agent 回复、追问模式、错误和客户信息 | renderHook、act、检查 result.current |
-| useJobPolling | 空 ID、完成、多轮查询、失败、等待审核、连续失败、成功后重置次数、超时、卸载停止 | mock getJobStatus、fake timers、异步推进时间 |
+| useJobPolling | 空 ID、完成、多轮查询、失败、等待审核、HTTP 分类、指数退避、retry_after 为 0、单次和整体超时、卸载取消 | mock getJobStatus、fake timers、AbortSignal、异步推进时间 |
 | useHealthCheck | 初始 null、健康、异常、挂载调用次数 | mock checkHealth、等待 Promise 更新 |
 | useCooldown | 初始状态、启动、到期、默认 10 秒、重复调用重新计时 | fake timers、act 内推进时间 |
 
@@ -456,7 +460,7 @@ fake timers 控制定时器，异步推进同时处理 Promise；act 让测试�
 
 ### 8.3 回答设计题的结构
 
-使用“具体问题 → 代码做法 → 行为结果 → 当前边界”的顺序。例如讨论取消：旧任务的响应可能晚到，所以清理 Effect 时设置 cancelled，响应回来后检查它，使旧结果不再更新当前页面；但这个标记没有中断网络请求。
+使用“具体问题 → 代码做法 → 行为结果 → 当前边界”的顺序。例如讨论取消：每次查询都带独立的 AbortSignal，清理 Effect 时设置 stopped 并调用 abort；即使异常环境不响应 abort，旧响应回来后也会因 stopped 而被忽略。
 
 别只列出 useState、useEffect、useRef、useCallback。每提到一个 API，都能接着说明它保存什么、何时变化、解决哪一种具体问题。
 
@@ -519,11 +523,11 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.9 组件卸载或任务切换时，如何处理旧请求？
 
-“清理函数会清除查询定时器和计时定时器，并把这轮 Effect 的 cancelled 设为 true。已经发出去的请求回来后检查标记，过期结果不再调用业务回调。当前没有 AbortController，所以网络请求仍可能执行，只是结果被忽略了；如果要进一步释放请求资源，可以补充 signal 和 abort。”
+“清理函数会将这轮 Effect 的 stopped 设为 true，清除轮询、截止时间、单次请求和 elapsed 定时器，并通过 AbortController 中止在途请求。即使底层环境没有响应 abort，旧结果回来后也不会调用业务回调。”
 
 ### 9.10 五分钟超时是严格截止吗？
 
-“目前不是强制截止。代码在每次 poll 开始前检查经过时间，如果已经达到五分钟就停止。但如果某次 fetch 一直不返回，代码还在 await，就不会立即触发这个检查。严格截止需要另行设置单次请求超时，或者独立截止计时器配合 AbortController。”
+“是。任务启动时会同时建立独立的五分钟截止计时器；到期后直接标记停止、中止在途请求并调用超时回调。每次 fetch 另有十五秒超时，单次超时会按可恢复的网络错误进入重试。”
 
 ### 9.11 健康检查为什么用 null、true、false？会自动恢复吗？
 
@@ -550,8 +554,8 @@ setMessages((prev) => [...prev, B]);
 | 查询失败、成功、失败 | 两次失败不累计成连续两次 | 成功清零失败计数 |
 | 查询连续失败三次 | 停止并调用错误回调 | 总共三次失败，不是额外三次重试 |
 | 改变完成回调但 jobId 不变 | 轮询保持，后续取 ref 中的新回调 | 回调更新与生命周期分离 |
-| 切到新 job，旧请求晚返回 | 旧 Effect 被取消，忽略旧响应 | 不等于中断网络请求 |
-| 五分钟内有一次请求一直挂起 | 不保证第五分钟立即停止 | 超时只在 poll 开头检查 |
+| 切到新 job，旧请求仍在途 | 旧 Effect 中止请求并忽略任何迟到结果 | abort 与 stopped 双重保护 |
+| 五分钟内有一次请求一直挂起 | 单次十五秒时中止并重试；总计五分钟时强制结束 | 两层独立截止时间 |
 | waiting_review | 停止查询，交给审核处理器 | 不自动继续等审核完成 |
 | 5 秒冷却在第 3 秒重启 | 约第 8 秒结束 | 清除旧 timer 后重新计时 |
 | 冷却中修改 durationMs | 已存在 timer 不自动改期 | 新时长用于下一次 startCooldown |
@@ -565,17 +569,16 @@ setMessages((prev) => [...prev, B]);
 | 不准确的说法 | 基于当前代码的准确说法 |
 |---|---|
 | “每五秒准时查一次” | 首次等五秒，后续在请求结束后按 retry_after 或默认间隔查询 |
-| “五分钟后强制取消请求” | 下一次 poll 开始前检查五分钟，未给 fetch 设置强制截止 |
-| “卸载时取消所有网络请求” | 清 timer 并忽略旧响应，未 abort 在途请求 |
+| “所有错误都按五秒固定重试” | 可恢复请求错误按 5 秒、10 秒指数退避；普通 4xx 立即失败；processing 遵守 retry_after |
+| “一个 Hook 可以同时追踪多个任务” | Hook 一次管理一个 job；SupportForm 在任务终止或审核完成前锁住新提交 |
 | “健康检查会持续监控” | 正常挂载时检查，没有周期探测 |
 | “会话 Hook 自动恢复历史” | 保存当前组件内存状态，没有刷新恢复 |
 | “十秒冷却保证用户无法频繁调用 API” | 只控制前端交互，不能代替后端限制 |
-| “所有完成消息都带引用” | 普通完成回调只传字符串，审核路径才传完整任务结果 |
-| “人工审核结束会自动刷新聊天消息” | 当前成功后只清空待审核状态，没有消费返回值更新消息 |
+| “轮询会采用提交接口的首次 retry_after” | Hook 只接收 jobId，因此首次查询仍固定等待五秒 |
 
 如果被问“你会先改什么”，可以这样回答：
 
-“我会优先补齐直接影响正确性的边界，比如明确处理 rejected 终态、普通完成结果保留引用、重复完成的去重，以及请求的超时和取消。随后补冷却卸载清理，再根据需求决定健康检查重试和会话持久化。每个改动会先补对应场景测试；涉及 API 字段变化时，也要同步后端模型、前端类型、客户端和契约测试。”
+“我会先根据产品需求判断是否要支持并行任务；如果仍是单任务交互，就保持提交锁并补强提示。随后再评估是否把提交接口的首次 retry_after 传入 Hook，以及是否增加健康检查重试和会话持久化。每个改动都补对应场景测试；涉及 API 字段变化时，也要同步后端模型、前端类型、客户端和契约测试。”
 
 这是改进计划，不代表这些功能已经完成。
 

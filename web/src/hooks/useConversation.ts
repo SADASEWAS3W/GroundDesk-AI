@@ -34,13 +34,13 @@ export function useConversation() {
 
   const updateMessageStatus = useCallback(
     (
-      id: string, // 要更新的客户消息ID
+      id: string, // 要处理的客户消息ID
       status: Message["status"], // 新状态
       response?: string, // 后端生成的客服答案
       error?: string, // 失败原因
-      result?: JobStatus, // 完整任务结果，用来提取引用和人工审核信息
+      result?: JobStatus, // 完整任务结果，包括任务ID、引用和审核信息
     ) => {
-      const responseContent = response?.trim();
+      const responseContent = response?.trim(); // 删除回答首尾的空白字符
       const replyId = responseContent ? crypto.randomUUID() : undefined;
       const replyTimestamp = responseContent ? new Date() : undefined;
 
@@ -72,6 +72,7 @@ export function useConversation() {
             requiresHumanReview: result?.requires_human_review, // 人工审核标记
             reviewReason: result?.review_reason, // 审核原因
           };
+          // 先查找是否有已有回复
           const existingReplyIndex = messages.findIndex(
             (message) => message.role === "agent" && message.replyToId === id,
           );
@@ -153,11 +154,11 @@ export function useConversation() {
   }, []);
 
   return {
-    conversation,
-    addCustomerMessage,
-    updateMessageStatus,
-    setMessageJobId,
-    applyReviewResult,
-    setCustomerInfo,
+    conversation, // 当前完整对话
+    addCustomerMessage, // 创建本地客户信息
+    updateMessageStatus, // 更新客户信息或更新Agent回复
+    setMessageJobId, // 将前端信息关联到后台任务
+    applyReviewResult, // 将审核状态更新回原Agent回复
+    setCustomerInfo, // 保存客户身份
   };
 }

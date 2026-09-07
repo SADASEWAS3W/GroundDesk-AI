@@ -3,6 +3,16 @@ import type { ChatRequest, JobAccepted, JobStatus } from "./types";
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 export async function submitChat(request: ChatRequest): Promise<JobAccepted> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
@@ -18,12 +28,20 @@ export async function submitChat(request: ChatRequest): Promise<JobAccepted> {
   return res.json();
 }
 
-export async function getJobStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_URL}/api/jobs/${encodeURIComponent(jobId)}`);
+export async function getJobStatus(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<JobStatus> {
+  const res = await fetch(`${API_URL}/api/jobs/${encodeURIComponent(jobId)}`, {
+    signal,
+  });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? `Request failed with status ${res.status}`);
+    throw new ApiError(
+      body.error ?? `Request failed with status ${res.status}`,
+      res.status,
+    );
   }
 
   return res.json();

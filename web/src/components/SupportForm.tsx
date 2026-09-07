@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useConversation } from "@/hooks/useConversation";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
 import { useJobPolling } from "@/hooks/useJobPolling";
@@ -39,6 +39,7 @@ export function SupportForm() {
   } | null>(null);
   const [pendingReview, setPendingReview] = useState<JobStatus | null>(null);
   const [editedAnswer, setEditedAnswer] = useState("");
+  const activeSubmissionRef = useRef(false);
 
   const handlePollComplete = useCallback(
     (status: JobStatus) => {
@@ -56,6 +57,7 @@ export function SupportForm() {
       setIsSubmitting(false);
       setError(null);
       setLastSubmission(null);
+      activeSubmissionRef.current = false;
       startCooldown();
     },
     [activeMessageId, updateMessageStatus, startCooldown],
@@ -70,6 +72,7 @@ export function SupportForm() {
       setActiveMessageId(null);
       setIsSubmitting(false);
       setError(errMsg);
+      activeSubmissionRef.current = false;
     },
     [activeMessageId, updateMessageStatus],
   );
@@ -118,6 +121,7 @@ export function SupportForm() {
       setPendingReview(null);
       setError(null);
       setLastSubmission(null);
+      activeSubmissionRef.current = false;
       startCooldown();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Review failed");
@@ -126,6 +130,8 @@ export function SupportForm() {
 
   const handleSubmit = useCallback(
     async (name: string, email: string, messageText: string) => {
+      if (activeSubmissionRef.current) return;
+      activeSubmissionRef.current = true;
       setIsSubmitting(true);
       setError(null);
       setLastSubmission({ name, email, message: messageText });
@@ -176,6 +182,7 @@ export function SupportForm() {
         setActiveMessageId(null);
         setIsSubmitting(false);
         setError(errMsg);
+        activeSubmissionRef.current = false;
       }
     },
     [

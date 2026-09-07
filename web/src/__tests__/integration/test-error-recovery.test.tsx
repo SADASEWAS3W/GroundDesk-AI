@@ -260,10 +260,10 @@ describe("Error recovery", () => {
     await user.type(screen.getByLabelText("Message"), "Help");
     await user.click(screen.getByRole("button", { name: "Send Message" }));
 
-    // Advance through 3 network retries (5s each)
-    for (let i = 0; i < 3; i++) {
+    // First poll, then retries after 5s and 10s.
+    for (const delay of [5000, 5000, 10000]) {
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(5000);
+        await vi.advanceTimersByTimeAsync(delay);
       });
     }
 
