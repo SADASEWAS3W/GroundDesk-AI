@@ -6,7 +6,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| [useConversation.ts](../web/src/hooks/useConversation.ts) | 保存会话状态，提供消息和客户信息操作 |
+| [useConversation.ts](../web/src/hooks/useConversation.ts) | 保存会话状态，并从当前标签页恢复消息和任务 |
 | [useJobPolling.ts](../web/src/hooks/useJobPolling.ts) | 根据任务 ID 查询结果，处理重试、超时和清理 |
 | [useHealthCheck.ts](../web/src/hooks/useHealthCheck.ts) | 检查后端连接，支持超时取消、手动刷新和恢复触发 |
 | [useCooldown.ts](../web/src/hooks/useCooldown.ts) | 管理可取消、可恢复并显示剩余时间的冷却窗口 |
@@ -156,7 +156,7 @@ handleSubmit(
 );
 ```
 
-本 Hook 保存的是页面内存状态。没有 localStorage、历史恢复接口、会话重置方法；当前 `submitChat` 也不发送整个 `messages` 数组。后端如何构造历史上下文应另行查看后端实现。
+本 Hook 在内存中管理状态，并把会话写入当前标签页的 `sessionStorage`。重新挂载后会校验持久化结构、还原时间字段；带 `jobId` 的处理中消息由 `SupportForm` 继续轮询，待审核草稿会恢复审核面板。没有成功创建任务的中断消息会恢复为失败状态。关闭标签页会清除这份会话。
 
 ### 2.6 为什么采用函数式更新和 useCallback？
 
@@ -355,7 +355,7 @@ export function useCooldown(durationMs: number = 10000) {
 
 当前组件在普通任务完成和审核操作成功时调用 startCooldown；提交进行中用 isSubmitting / isPolling 禁止操作，成功后再用冷却标记继续限制提交。首次表单和追问按钮会显示 `Please wait Ns`。
 
-这是可跨同一标签页刷新恢复的前端冷却窗口，不提供服务器限流，也不延迟某个函数直到输入停止，不应直接称为输入防抖。关闭标签页、清除存储或直接调用 API 仍可绕过它；严格频率限制必须由服务端实现。
+这是可跨同一标签页刷新恢复的前端冷却窗口，不延迟某个函数直到输入停止，不应直接称为输入防抖。服务端另外使用 Redis 对聊天接口执行幂等去重和固定窗口限流；前端冷却负责交互提示，服务端保护负责约束实际请求。
 
 ## 6. SupportForm：将四个 Hooks 串成业务流程
 
@@ -392,7 +392,7 @@ export function useCooldown(durationMs: number = 10000) {
 
 轮询内部重试：仍使用同一个 job_id，只重新查询状态，不创建新任务。
 
-用户点击 Try Again：组件使用 lastSubmission 重新执行 handleSubmit，会追加一条新的客户消息并再次 POST，创建新任务；它不是恢复旧任务。
+用户点击 Try Again：组件使用 lastSubmission 重新执行 handleSubmit，并复用原来的 Idempotency-Key。服务端已经接收过该逻辑提交时会返回原 jobId；尚未接收时才创建任务。
 
 失败路径清空 active ID、结束提交状态并显示错误，保留 lastSubmission 供用户重试。普通失败不会启动冷却。
 
@@ -402,12 +402,12 @@ waiting_review 触发 handleReview。组件将前端客户消息标记为 comple
 
 因此，前端 completed 在这条路径上表示消息进入展示阶段，不代表后台任务已经批准或最终回答完成。后端 waiting_review 与前端消息状态要分别理解。
 
-审核按钮通过 submitReview 提交 approve / edit / reject。成功后使用接口返回值更新已有聊天消息，清空 pendingReview 并调用 startCooldown；审核结果是终态，因此不会继续轮询。
+审核按钮通过 submitReview 提交 approve / edit / reject。提交期间由独立 ref 阻止重复请求并禁用编辑区；失败时保存原审核动作供 Try Again 重试。成功后使用接口返回值更新已有聊天消息，清空 pendingReview 并调用 startCooldown；审核结果是终态，因此不会继续轮询。
 
 ### 6.5 界面状态组合
 
 ```ts
-const isProcessing = isSubmitting || isPolling;
+const isProcessing = isSubmitting || isPolling || pendingReview !== null;
 ```
 
 追问输入框接收：
@@ -420,7 +420,7 @@ const isProcessing = isSubmitting || isPolling;
 
 MessageInput 还检查非空和最大长度，Enter 提交、Shift+Enter 换行。字段校验属于输入组件，不属于这四个 Hooks。
 
-当前没有把 `isHealthy` 或 `pendingReview` 加入提交禁用条件，也没有在 SupportForm.handleSubmit 开头建立统一的同步防重入锁。按钮禁用是交互控制，不能替代后端幂等和限流。
+`pendingReview` 会加入提交禁用条件；`activeSubmissionRef` 和 `reviewSubmissionRef` 分别同步阻止聊天与审核重复提交。审核请求期间编辑框和三个操作按钮都会禁用，失败后的 Try Again 会重新执行原审核动作。聊天重试复用同一个 `Idempotency-Key`，服务端返回已经关联的任务；Redis 固定窗口限流超过阈值时返回 429 和 `Retry-After`。健康状态仍只用于展示。
 
 ## 7. 已有测试如何验证这些封装
 
@@ -428,7 +428,7 @@ MessageInput 还检查非空和最大长度，Enter 提交、Shift+Enter 换行�
 
 | Hook | 已有测试场景 | 主要方法 |
 |---|---|---|
-| useConversation | 初始状态、消息字段、追加顺序、状态更新、Agent 回复、追问模式、错误和客户信息 | renderHook、act、检查 result.current |
+| useConversation | 初始状态、消息字段、状态更新、Agent 回复、追问模式、错误、持久化恢复和无效数据 | renderHook、sessionStorage、act、检查 result.current |
 | useJobPolling | 空 ID、完成、多轮查询、失败、等待审核、HTTP 分类、指数退避、retry_after 为 0、单次和整体超时、卸载取消 | mock getJobStatus、fake timers、AbortSignal、异步推进时间 |
 | useHealthCheck | 初始 null、健康、异常、五秒取消、手动刷新、竞态保护、可见和在线事件、卸载清理 | mock checkHealth、fake timers、AbortSignal、事件派发 |
 | useCooldown | 初始状态、剩余秒数、到期、重启、主动取消、卸载清理、刷新恢复、参数校验 | fake timers、sessionStorage、act 内推进时间 |
@@ -518,7 +518,7 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.8 连续失败三次和用户点击重试有什么区别？
 
-“轮询失败重试还是查原来的 jobId，任何一次查询成功就清零连续失败次数，第三次连续失败会结束轮询。用户点击 Try Again 则是用保留的提交内容重新调用 POST 接口，会创建新消息和新任务。这个区别也意味着重新提交要考虑后端幂等，不能把它理解成继续等待原任务。”
+“轮询失败重试还是查原来的 jobId，任何一次查询成功就清零连续失败次数，第三次连续失败会结束轮询。用户点击 Try Again 会用保留的内容重新调用 POST，并复用这次逻辑提交的 Idempotency-Key；服务端如果已经接收过请求，会返回原 jobId，避免重复创建任务。”
 
 ### 9.9 组件卸载或任务切换时，如何处理旧请求？
 
@@ -534,7 +534,7 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.12 冷却控制是不是防抖或者限流？
 
-“它是任务或审核成功后的前端冷却窗口。调用 startCooldown 就进入冷却，默认十秒，重复调用会重新计时；remainingSeconds 用于展示倒计时，cancelCooldown 可以提前结束。绝对截止时间保存在 sessionStorage 中，同一标签页刷新后会继续。它没有延迟提交函数，也不能替代后端限流。”
+“它是任务或审核成功后的前端冷却窗口。调用 startCooldown 就进入冷却，默认十秒，重复调用会重新计时；remainingSeconds 用于展示倒计时，cancelCooldown 可以提前结束。绝对截止时间保存在 sessionStorage 中，同一标签页刷新后会继续。服务端的 Redis 限流和幂等去重独立保护真实 API 请求。”
 
 ### 9.13 怎么测轮询和冷却，不会每次都等五分钟吧？
 
@@ -542,7 +542,7 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.14 为什么 waiting_review 也调用 completed？
 
-“这里有两套状态：后端任务是 waiting_review，前端消息却只有 sent、processing、completed、failed。当前用 completed 把这次问题处理切换到可展示阶段，再用 requiresHumanReview 和 pendingReview 表达审核状态。它不代表答案已经批准。后续可以给前端补充明确的审核状态，避免混用。”
+“这里有两套状态：后端 JobStatus 表达工作流状态，前端 Message 另外支持 waiting_review 和 rejected。进入审核时，客户消息完成处理，Agent 草稿标记为 waiting_review；审核结果再把同一条草稿更新为 completed 或 rejected，避免把待审核内容当作最终答案。”
 
 ## 10. 场景推演：离开代码也能说明行为
 
@@ -558,7 +558,7 @@ setMessages((prev) => [...prev, B]);
 | waiting_review | 停止查询，交给审核处理器 | 不自动继续等审核完成 |
 | 5 秒冷却在第 3 秒重启 | 约第 8 秒结束 | 清除旧 timer 后重新计时 |
 | 冷却中修改 durationMs | 已存在 timer 不自动改期 | 新时长用于下一次 startCooldown |
-| 页面刷新 | 本地会话重新初始化，未过期的冷却从 sessionStorage 恢复 | 同一标签页的体验层持久化 |
+| 页面刷新 | 恢复会话；继续查询带 jobId 的任务或恢复人工审核；未过期冷却继续 | 同一标签页的 sessionStorage 持久化 |
 | 后端启动时健康，之后断线 | 状态灯会在下次恢复可见、online 或手动检查后变化 | 当前没有周期心跳 |
 
 ## 11. 讲述边界与改进顺序
@@ -571,8 +571,8 @@ setMessages((prev) => [...prev, B]);
 | “所有错误都按五秒固定重试” | 可恢复请求错误按 5 秒、10 秒指数退避；普通 4xx 立即失败；processing 遵守 retry_after |
 | “一个 Hook 可以同时追踪多个任务” | Hook 一次管理一个 job；SupportForm 在任务终止或审核完成前锁住新提交 |
 | “健康检查会持续监控” | 挂载、恢复可见、网络恢复或手动操作时检查，没有周期心跳 |
-| “会话 Hook 自动恢复历史” | 保存当前组件内存状态，没有刷新恢复 |
-| “十秒冷却保证用户无法频繁调用 API” | 只控制前端交互，不能代替后端限制 |
+| “会话 Hook 会永久保存历史” | 只恢复当前标签页的 sessionStorage，关闭标签页后清除 |
+| “十秒冷却负责服务端限流” | 冷却负责交互；Redis 固定窗口限流和幂等键保护 API |
 | “轮询会采用提交接口的首次 retry_after” | Hook 只接收 jobId，因此首次查询仍固定等待五秒 |
 
 如果被问“你会先改什么”，可以这样回答：

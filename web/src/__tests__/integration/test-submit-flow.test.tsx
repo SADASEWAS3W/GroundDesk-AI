@@ -72,12 +72,15 @@ describe("Submit flow integration", () => {
     await user.click(screen.getByRole("button", { name: "Send Message" }));
 
     // Verify submitChat was called
-    expect(mockedSubmitChat).toHaveBeenCalledWith({
-      name: "Ali",
-      email: "ali@test.com",
-      message: "How do I reset my password?",
-      channel: "web",
-    });
+    expect(mockedSubmitChat).toHaveBeenCalledWith(
+      {
+        name: "Ali",
+        email: "ali@test.com",
+        message: "How do I reset my password?",
+        channel: "web",
+      },
+      expect.any(String),
+    );
 
     // Customer message appears
     expect(screen.getByText("How do I reset my password?")).toBeInTheDocument();

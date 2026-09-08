@@ -1,4 +1,4 @@
-import { renderHook, act } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useConversation } from "@/hooks/useConversation";
 
 describe("useConversation", () => {
@@ -352,5 +352,82 @@ describe("useConversation", () => {
     expect(result.current.conversation.messages[1]).toEqual(
       expect.objectContaining({ content: "", status: "rejected" }),
     );
+  });
+
+  it("restores a completed conversation from session storage", async () => {
+    const first = renderHook(() => useConversation());
+    let customerMessage: ReturnType<
+      typeof first.result.current.addCustomerMessage
+    >;
+
+    act(() => {
+      first.result.current.setCustomerInfo("Ali", "ali@test.com");
+      customerMessage = first.result.current.addCustomerMessage("Help");
+    });
+    act(() => {
+      first.result.current.updateMessageStatus(
+        customerMessage!.id,
+        "completed",
+        "Restored answer",
+      );
+    });
+    await waitFor(() => {
+      expect(window.sessionStorage.getItem("grounddesk:conversation")).not.toBeNull();
+    });
+    first.unmount();
+
+    const second = renderHook(() => useConversation());
+    await waitFor(() => {
+      expect(second.result.current.isHydrated).toBe(true);
+      expect(second.result.current.conversation.messages).toHaveLength(2);
+    });
+
+    expect(second.result.current.conversation.customerName).toBe("Ali");
+    expect(second.result.current.conversation.messages[0].timestamp).toBeInstanceOf(
+      Date,
+    );
+    expect(second.result.current.conversation.messages[1].content).toBe(
+      "Restored answer",
+    );
+  });
+
+  it("marks an interrupted request without a job as failed after restoration", async () => {
+    window.sessionStorage.setItem(
+      "grounddesk:conversation",
+      JSON.stringify({
+        messages: [
+          {
+            id: "message-1",
+            role: "customer",
+            content: "Help",
+            timestamp: new Date().toISOString(),
+            status: "processing",
+          },
+        ],
+        customerName: "Ali",
+        customerEmail: "ali@test.com",
+        isFollowUpMode: false,
+      }),
+    );
+
+    const { result } = renderHook(() => useConversation());
+    await waitFor(() => expect(result.current.isHydrated).toBe(true));
+
+    expect(result.current.conversation.messages[0]).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: expect.stringContaining("interrupted"),
+      }),
+    );
+  });
+
+  it("discards malformed persisted conversation data", async () => {
+    window.sessionStorage.setItem("grounddesk:conversation", "not-json");
+
+    const { result } = renderHook(() => useConversation());
+    await waitFor(() => expect(result.current.isHydrated).toBe(true));
+
+    expect(result.current.conversation.messages).toEqual([]);
+    expect(window.sessionStorage.getItem("grounddesk:conversation")).toBeNull();
   });
 });

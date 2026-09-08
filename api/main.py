@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -22,6 +22,14 @@ from agent.customer_success_agent import run_agent
 from agent.graph import initialize_support_graph, resume_support_graph, run_support_graph
 from agent.tools.customer import get_customer_history
 from agent.tools.ticket import get_ticket
+from api.request_guard import (
+    acquire_review_lock,
+    check_chat_rate_limit,
+    claim_idempotent_job,
+    get_idempotent_job,
+    release_idempotent_job,
+    release_review_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -167,13 +175,24 @@ def _format_chat_message(req: ChatRequest) -> str:
     return f"[Customer: {req.email}, Channel: {req.channel}] {current_message}"
 
 
-async def _process_chat(job_id: str, message: str, ctx) -> None:
+async def _process_chat(
+    job_id: str,
+    message: str,
+    ctx,
+    idempotency_key: str | None = None,
+) -> None:
     """Run the agent in the background and store the result as a job."""
     set_correlation_id(job_id)
     logger.info("Job %s started — background processing", job_id)
     try:
         result = await _run_workflow(job_id, message, ctx)
         await set_job(ctx.redis_client, job_id, result)
+        if result.get("status") == "failed" and idempotency_key:
+            await release_idempotent_job(
+                ctx.redis_client,
+                idempotency_key,
+                job_id,
+            )
         logger.info("Job %s completed — response stored", job_id)
     except Exception as exc:
         logger.exception("Job %s failed — %s", job_id, exc)
@@ -182,6 +201,12 @@ async def _process_chat(job_id: str, message: str, ctx) -> None:
             "response": None,
             "error": "An error occurred while processing your request. Please try again.",
         })
+        if idempotency_key:
+            await release_idempotent_job(
+                ctx.redis_client,
+                idempotency_key,
+                job_id,
+            )
 
 
 async def _process_webhook(job_id: str, channel: str, from_address: str, body: str, ctx) -> None:
@@ -258,17 +283,58 @@ async def health_ready(request: Request):
     )
 
 
-@app.post("/api/chat")
+@app.post(
+    "/api/chat",
+    response_model=ChatResponse,
+    responses={
+        202: {"model": JobAccepted, "description": "Background job accepted"},
+        429: {"description": "Chat request rate limit exceeded"},
+    },
+)
 async def chat(
     req: ChatRequest,
     request: Request,
     background_tasks: BackgroundTasks,
+    idempotency_key: Annotated[
+        str | None,
+        Header(alias="Idempotency-Key", max_length=128),
+    ] = None,
     sync: bool = Query(False),
 ):
+    ctx = request.app.state.agent_ctx
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "Idempotency-Key must contain 1 to 128 characters"},
+            )
+
+    if not sync and idempotency_key:
+        existing_job_id = await get_idempotent_job(
+            ctx.redis_client,
+            idempotency_key,
+        )
+        if existing_job_id:
+            return JSONResponse(
+                status_code=202,
+                content=JobAccepted(job_id=existing_job_id).model_dump(),
+            )
+
+    client_host = request.client.host if request.client else "unknown"
+    rate_limit = await check_chat_rate_limit(
+        ctx.redis_client,
+        f"{req.email.strip().lower()}|{client_host}",
+    )
+    if not rate_limit.allowed:
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(rate_limit.retry_after)},
+            content={"error": "Too many requests. Please try again later."},
+        )
+
     cid = set_correlation_id()
     logger.info("Chat request — email=%s channel=%s", req.email, req.channel)
-
-    ctx = request.app.state.agent_ctx
     message = _format_chat_message(req)
 
     # Sync mode: explicit ?sync=true OR graceful fallback when Redis is unavailable
@@ -279,8 +345,19 @@ async def chat(
         return ChatResponse(correlation_id=cid, **result)
 
     # Async mode (default)
+    if idempotency_key:
+        claimed, existing_job_id = await claim_idempotent_job(
+            ctx.redis_client,
+            idempotency_key,
+            cid,
+        )
+        if not claimed and existing_job_id:
+            return JSONResponse(
+                status_code=202,
+                content=JobAccepted(job_id=existing_job_id).model_dump(),
+            )
     await set_job(ctx.redis_client, cid, {"status": "processing"})
-    background_tasks.add_task(_process_chat, cid, message, ctx)
+    background_tasks.add_task(_process_chat, cid, message, ctx, idempotency_key)
     return JSONResponse(status_code=202, content=JobAccepted(job_id=cid).model_dump())
 
 
@@ -304,25 +381,51 @@ async def job_status(job_id: str, request: Request):
     )
 
 
-@app.post("/api/reviews/{run_id}", response_model=JobStatus)
+@app.post(
+    "/api/reviews/{run_id}",
+    response_model=JobStatus,
+    responses={409: {"description": "Review submission already in progress"}},
+)
 async def review_run(run_id: str, decision: ReviewDecision, request: Request):
     if decision.action not in {"approve", "edit", "reject"}:
         return JSONResponse(status_code=422, content={"error": "invalid review action"})
     ctx = request.app.state.agent_ctx
-    state = await resume_support_graph(
-        ctx.support_graph,
-        run_id,
-        {"action": decision.action, "answer": decision.answer},
-    )
-    result = {
-        "status": state.get("status", "completed"),
-        "response": state.get("answer", ""),
-        "citations": state.get("citations", []),
-        "requires_human_review": False,
-        "review_reason": state.get("review_reason"),
-    }
-    await set_job(ctx.redis_client, run_id, result)
-    return JobStatus(job_id=run_id, **result)
+    acquired, lock_owner = await acquire_review_lock(ctx.redis_client, run_id)
+    if not acquired:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Review is already being submitted"},
+        )
+    try:
+        existing = await get_job(ctx.redis_client, run_id)
+        if existing and existing.get("status") in {"completed", "rejected"}:
+            return JobStatus(
+                job_id=run_id,
+                status=existing["status"],
+                response=existing.get("response"),
+                error=existing.get("error"),
+                retry_after=None,
+                citations=existing.get("citations", []),
+                requires_human_review=existing.get("requires_human_review", False),
+                review_reason=existing.get("review_reason"),
+            )
+
+        state = await resume_support_graph(
+            ctx.support_graph,
+            run_id,
+            {"action": decision.action, "answer": decision.answer},
+        )
+        result = {
+            "status": state.get("status", "completed"),
+            "response": state.get("answer", ""),
+            "citations": state.get("citations", []),
+            "requires_human_review": False,
+            "review_reason": state.get("review_reason"),
+        }
+        await set_job(ctx.redis_client, run_id, result)
+        return JobStatus(job_id=run_id, **result)
+    finally:
+        await release_review_lock(ctx.redis_client, run_id, lock_owner)
 
 
 @app.get("/api/tickets/{ticket_id}")

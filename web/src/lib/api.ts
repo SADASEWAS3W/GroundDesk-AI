@@ -13,10 +13,16 @@ export class ApiError extends Error {
   }
 }
 
-export async function submitChat(request: ChatRequest): Promise<JobAccepted> {
+export async function submitChat(
+  request: ChatRequest,
+  idempotencyKey?: string,
+): Promise<JobAccepted> {
   const res = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    },
     body: JSON.stringify(request),
   });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConversation } from "@/hooks/useConversation";
 import { useHealthCheck } from "@/hooks/useHealthCheck";
 import { useJobPolling } from "@/hooks/useJobPolling";
@@ -19,6 +19,7 @@ const MAX_HISTORY_MESSAGE_LENGTH = 4000;
 export function SupportForm() {
   const {
     conversation,
+    isHydrated: isConversationHydrated,
     addCustomerMessage,
     updateMessageStatus,
     setMessageJobId,
@@ -36,10 +37,75 @@ export function SupportForm() {
     name: string;
     email: string;
     message: string;
+    idempotencyKey: string;
   } | null>(null);
   const [pendingReview, setPendingReview] = useState<JobStatus | null>(null);
   const [editedAnswer, setEditedAnswer] = useState("");
+  const [isReviewSubmitting, setIsReviewSubmitting] = useState(false);
+  const [reviewAction, setReviewAction] = useState<
+    "approve" | "edit" | "reject" | null
+  >(null);
+  const [lastReviewSubmission, setLastReviewSubmission] = useState<{
+    action: "approve" | "edit" | "reject";
+    answer?: string;
+  } | null>(null);
   const activeSubmissionRef = useRef(false);
+  const reviewSubmissionRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      !isConversationHydrated ||
+      activeJobId ||
+      pendingReview ||
+      activeSubmissionRef.current
+    ) {
+      return;
+    }
+
+    const reviewMessage = [...conversation.messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "agent" &&
+          message.status === "waiting_review" &&
+          Boolean(message.jobId),
+      );
+    if (reviewMessage?.jobId) {
+      activeSubmissionRef.current = true;
+      setPendingReview({
+        job_id: reviewMessage.jobId,
+        status: "waiting_review",
+        response: reviewMessage.content,
+        error: null,
+        retry_after: null,
+        citations: reviewMessage.citations,
+        requires_human_review: reviewMessage.requiresHumanReview,
+        review_reason: reviewMessage.reviewReason,
+      });
+      setEditedAnswer(reviewMessage.content);
+      return;
+    }
+
+    const processingMessage = [...conversation.messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "customer" &&
+          message.status === "processing" &&
+          Boolean(message.jobId),
+      );
+    if (processingMessage?.jobId) {
+      activeSubmissionRef.current = true;
+      setActiveMessageId(processingMessage.id);
+      setActiveJobId(processingMessage.jobId);
+      setIsSubmitting(true);
+    }
+  }, [
+    activeJobId,
+    conversation.messages,
+    isConversationHydrated,
+    pendingReview,
+  ]);
 
   const handlePollComplete = useCallback(
     (status: JobStatus) => {
@@ -57,6 +123,7 @@ export function SupportForm() {
       setIsSubmitting(false);
       setError(null);
       setLastSubmission(null);
+      setLastReviewSubmission(null);
       activeSubmissionRef.current = false;
       startCooldown();
     },
@@ -89,6 +156,7 @@ export function SupportForm() {
     }
     setPendingReview(status);
     setEditedAnswer(status.response ?? "");
+    setLastReviewSubmission(null);
     setActiveJobId(null);
     setActiveMessageId(null);
     setIsSubmitting(false);
@@ -101,40 +169,66 @@ export function SupportForm() {
     handleReview,
   );
 
-  const handleReviewDecision = useCallback(async (
-    action: "approve" | "edit" | "reject",
-  ) => {
-    if (!pendingReview) return;
-    try {
-      const result = await submitReview(
-        pendingReview.job_id,
+  const submitReviewDecision = useCallback(
+    async (
+      action: "approve" | "edit" | "reject",
+      answer?: string,
+    ) => {
+      if (!pendingReview || reviewSubmissionRef.current) return;
+
+      const submission = { action, ...(answer !== undefined ? { answer } : {}) };
+      reviewSubmissionRef.current = true;
+      setIsReviewSubmitting(true);
+      setReviewAction(action);
+      setError(null);
+
+      try {
+        const result = await submitReview(pendingReview.job_id, action, answer);
+        if (result.status === "completed" && !result.response?.trim()) {
+          throw new Error("The reviewed response was empty.");
+        }
+        applyReviewResult(result);
+        setPendingReview(null);
+        setError(null);
+        setLastSubmission(null);
+        setLastReviewSubmission(null);
+        activeSubmissionRef.current = false;
+        startCooldown();
+      } catch (err) {
+        setLastReviewSubmission(submission);
+        setError(err instanceof Error ? err.message : "Review failed");
+      } finally {
+        reviewSubmissionRef.current = false;
+        setIsReviewSubmitting(false);
+        setReviewAction(null);
+      }
+    },
+    [pendingReview, applyReviewResult, startCooldown],
+  );
+
+  const handleReviewDecision = useCallback(
+    (action: "approve" | "edit" | "reject") => {
+      void submitReviewDecision(
         action,
         action === "edit" ? editedAnswer : undefined,
       );
-      if (
-        result.status === "completed" &&
-        !result.response?.trim()
-      ) {
-        throw new Error("The reviewed response was empty.");
-      }
-      applyReviewResult(result);
-      setPendingReview(null);
-      setError(null);
-      setLastSubmission(null);
-      activeSubmissionRef.current = false;
-      startCooldown();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Review failed");
-    }
-  }, [pendingReview, editedAnswer, applyReviewResult, startCooldown]);
+    },
+    [editedAnswer, submitReviewDecision],
+  );
 
   const handleSubmit = useCallback(
-    async (name: string, email: string, messageText: string) => {
+    async (
+      name: string,
+      email: string,
+      messageText: string,
+      idempotencyKey = crypto.randomUUID(),
+    ) => {
       if (activeSubmissionRef.current) return;
       activeSubmissionRef.current = true;
       setIsSubmitting(true);
       setError(null);
-      setLastSubmission({ name, email, message: messageText });
+      setLastSubmission({ name, email, message: messageText, idempotencyKey });
+      setLastReviewSubmission(null);
 
       // Store customer info on first submission
       if (!conversation.isFollowUpMode) {
@@ -166,13 +260,16 @@ export function SupportForm() {
             role: item.role,
             content: item.content.slice(0, MAX_HISTORY_MESSAGE_LENGTH),
           }));
-        const job = await submitChat({
-          name,
-          email,
-          message: messageText,
-          channel: "web",
-          ...(history.length > 0 ? { history } : {}),
-        });
+        const job = await submitChat(
+          {
+            name,
+            email,
+            message: messageText,
+            channel: "web",
+            ...(history.length > 0 ? { history } : {}),
+          },
+          idempotencyKey,
+        );
         setMessageJobId(msg.id, job.job_id);
         setActiveJobId(job.job_id);
       } catch (err) {
@@ -215,16 +312,33 @@ export function SupportForm() {
 
   const handleRetry = useCallback(() => {
     setError(null);
+    if (lastReviewSubmission && pendingReview) {
+      void submitReviewDecision(
+        lastReviewSubmission.action,
+        lastReviewSubmission.answer,
+      );
+      return;
+    }
     if (lastSubmission) {
       handleSubmit(
         lastSubmission.name,
         lastSubmission.email,
         lastSubmission.message,
+        lastSubmission.idempotencyKey,
       );
     }
-  }, [lastSubmission, handleSubmit]);
+  }, [
+    lastReviewSubmission,
+    pendingReview,
+    submitReviewDecision,
+    lastSubmission,
+    handleSubmit,
+  ]);
 
   const isProcessing = isSubmitting || isPolling || pendingReview !== null;
+  const canRetry = Boolean(
+    (lastReviewSubmission && pendingReview) || lastSubmission,
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -232,7 +346,7 @@ export function SupportForm() {
         isHealthy={isHealthy}
         isProcessing={isProcessing}
         error={error}
-        onRetry={error ? handleRetry : undefined}
+        onRetry={error && canRetry ? handleRetry : undefined}
         onHealthRetry={refreshHealth}
       />
 
@@ -253,11 +367,39 @@ export function SupportForm() {
             value={editedAnswer}
             onChange={(event) => setEditedAnswer(event.target.value)}
             aria-label="Reviewed answer"
+            disabled={isReviewSubmitting}
           />
           <div className="mt-2 flex gap-2">
-            <button onClick={() => handleReviewDecision("approve")} className="rounded bg-green-700 px-3 py-1 text-white">Approve</button>
-            <button onClick={() => handleReviewDecision("edit")} className="rounded bg-blue-700 px-3 py-1 text-white">Save edit</button>
-            <button onClick={() => handleReviewDecision("reject")} className="rounded bg-red-700 px-3 py-1 text-white">Reject</button>
+            <button
+              type="button"
+              onClick={() => handleReviewDecision("approve")}
+              disabled={isReviewSubmitting}
+              className="rounded bg-green-700 px-3 py-1 text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isReviewSubmitting && reviewAction === "approve"
+                ? "Submitting..."
+                : "Approve"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleReviewDecision("edit")}
+              disabled={isReviewSubmitting}
+              className="rounded bg-blue-700 px-3 py-1 text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isReviewSubmitting && reviewAction === "edit"
+                ? "Submitting..."
+                : "Save edit"}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleReviewDecision("reject")}
+              disabled={isReviewSubmitting}
+              className="rounded bg-red-700 px-3 py-1 text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isReviewSubmitting && reviewAction === "reject"
+                ? "Submitting..."
+                : "Reject"}
+            </button>
           </div>
         </section>
       )}

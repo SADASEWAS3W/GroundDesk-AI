@@ -33,6 +33,9 @@ async function submitReviewableMessage(
 describe("Human review flow", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockedSubmitChat.mockReset();
+    mockedGetJobStatus.mockReset();
+    mockedSubmitReview.mockReset();
     mockedCheckHealth.mockResolvedValue(true);
     mockedSubmitChat.mockResolvedValue({
       job_id: "job-review",
@@ -109,5 +112,71 @@ describe("Human review flow", () => {
         .toBeInTheDocument();
     });
     expect(screen.queryByText("Draft answer")).not.toBeInTheDocument();
+  });
+
+  it("prevents duplicate review submissions while one is pending", async () => {
+    let resolveReview!: (status: Awaited<ReturnType<typeof api.submitReview>>) => void;
+    mockedSubmitReview.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveReview = resolve;
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<SupportForm />);
+
+    await submitReviewableMessage(user);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    const submittingButton = screen.getByRole("button", {
+      name: "Submitting...",
+    });
+    expect(submittingButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save edit" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    await user.click(submittingButton);
+    expect(mockedSubmitReview).toHaveBeenCalledTimes(1);
+
+    resolveReview({
+      job_id: "job-review",
+      status: "completed",
+      response: "Approved answer",
+      error: null,
+      retry_after: null,
+      requires_human_review: false,
+      citations: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Approved answer")).toBeInTheDocument();
+    });
+  });
+
+  it("retries the failed review action instead of resubmitting the chat", async () => {
+    mockedSubmitReview
+      .mockRejectedValueOnce(new Error("Review network error"))
+      .mockResolvedValueOnce({
+        job_id: "job-review",
+        status: "completed",
+        response: "Approved after retry",
+        error: null,
+        retry_after: null,
+        requires_human_review: false,
+        citations: [],
+      });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<SupportForm />);
+
+    await submitReviewableMessage(user);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => {
+      expect(screen.getByText("Review network error")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Try Again" }));
+
+    await waitFor(() => {
+      expect(mockedSubmitReview).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Approved after retry")).toBeInTheDocument();
+    });
+    expect(mockedSubmitChat).toHaveBeenCalledTimes(1);
   });
 });

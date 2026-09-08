@@ -91,12 +91,18 @@ describe("Error recovery", () => {
 
     // Verify submitChat was called again with same data
     expect(mockedSubmitChat).toHaveBeenCalledTimes(2);
-    expect(mockedSubmitChat).toHaveBeenLastCalledWith({
-      name: "Ali",
-      email: "ali@test.com",
-      message: "Help me",
-      channel: "web",
-    });
+    expect(mockedSubmitChat).toHaveBeenLastCalledWith(
+      {
+        name: "Ali",
+        email: "ali@test.com",
+        message: "Help me",
+        channel: "web",
+      },
+      expect.any(String),
+    );
+    expect(mockedSubmitChat.mock.calls[1][1]).toBe(
+      mockedSubmitChat.mock.calls[0][1],
+    );
 
     // Poll completes
     await act(async () => {

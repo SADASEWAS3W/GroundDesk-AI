@@ -1,4 +1,45 @@
-import { checkHealth, getJobStatus } from "@/lib/api";
+import { checkHealth, getJobStatus, submitChat } from "@/lib/api";
+
+describe("submitChat", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the logical submission idempotency key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          job_id: "job-1",
+          status: "processing",
+          retry_after: 5,
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await submitChat(
+      {
+        name: "Ali",
+        email: "ali@test.com",
+        message: "Help",
+        channel: "web",
+      },
+      "submission-1",
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/chat",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "submission-1",
+        },
+      }),
+    );
+  });
+});
 
 describe("getJobStatus", () => {
   afterEach(() => {

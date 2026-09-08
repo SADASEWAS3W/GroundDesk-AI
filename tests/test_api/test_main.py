@@ -9,6 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from api.main import app
+from agent.cache import set_job as store_job
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,21 @@ class TestHealth:
 
 
 class TestChat:
+    async def test_chat_openapi_documents_idempotency_and_rate_limit(
+        self,
+        client: AsyncClient,
+    ):
+        response = await client.get("/openapi.json")
+        operation = response.json()["paths"]["/api/chat"]["post"]
+
+        assert any(
+            parameter["name"] == "Idempotency-Key"
+            and parameter["in"] == "header"
+            for parameter in operation["parameters"]
+        )
+        assert "202" in operation["responses"]
+        assert "429" in operation["responses"]
+
     @patch("api.main.set_job", new_callable=AsyncMock)
     @patch("api.main.run_agent", new_callable=AsyncMock)
     async def test_chat_returns_202_with_job(self, mock_run, mock_set_job, client: AsyncClient):
@@ -98,6 +114,90 @@ class TestChat:
 
         assert resp.status_code == 202
         assert resp.json()["status"] == "processing"
+
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.run_agent", new_callable=AsyncMock)
+    async def test_chat_reuses_job_for_the_same_idempotency_key(
+        self,
+        mock_run,
+        mock_set_job,
+        client: AsyncClient,
+        _mock_lifespan,
+        mock_redis,
+    ):
+        _mock_lifespan.redis_client = mock_redis
+        mock_run.return_value = "Response"
+        payload = {"message": "Hi", "email": "same@test.com"}
+        headers = {"Idempotency-Key": "submission-1"}
+
+        first = await client.post("/api/chat", json=payload, headers=headers)
+        second = await client.post("/api/chat", json=payload, headers=headers)
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert second.json()["job_id"] == first.json()["job_id"]
+        mock_run.assert_awaited_once()
+
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.run_agent", new_callable=AsyncMock)
+    async def test_failed_job_releases_its_idempotency_key_for_retry(
+        self,
+        mock_run,
+        mock_set_job,
+        client: AsyncClient,
+        _mock_lifespan,
+        mock_redis,
+    ):
+        _mock_lifespan.redis_client = mock_redis
+        mock_run.side_effect = [RuntimeError("provider failed"), "Recovered"]
+        payload = {"message": "Hi", "email": "retry@test.com"}
+        headers = {"Idempotency-Key": "retry-submission"}
+
+        first = await client.post("/api/chat", json=payload, headers=headers)
+        second = await client.post("/api/chat", json=payload, headers=headers)
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert second.json()["job_id"] != first.json()["job_id"]
+        assert mock_run.await_count == 2
+
+    @patch("api.main.set_job", new_callable=AsyncMock)
+    @patch("api.main.run_agent", new_callable=AsyncMock)
+    async def test_chat_enforces_the_server_rate_limit(
+        self,
+        mock_run,
+        mock_set_job,
+        client: AsyncClient,
+        _mock_lifespan,
+        mock_redis,
+        monkeypatch,
+    ):
+        import api.request_guard as guard
+
+        _mock_lifespan.redis_client = mock_redis
+        monkeypatch.setattr(guard, "CHAT_RATE_LIMIT_REQUESTS", 1)
+        monkeypatch.setattr(guard, "CHAT_RATE_LIMIT_WINDOW_SECONDS", 30)
+        mock_run.return_value = "Response"
+        payload = {"message": "Hi", "email": "limited@test.com"}
+
+        first = await client.post("/api/chat", json=payload)
+        second = await client.post("/api/chat", json=payload)
+
+        assert first.status_code == 202
+        assert second.status_code == 429
+        assert second.json() == {
+            "error": "Too many requests. Please try again later."
+        }
+        assert 1 <= int(second.headers["Retry-After"]) <= 30
+
+    async def test_chat_rejects_an_empty_idempotency_key(self, client: AsyncClient):
+        response = await client.post(
+            "/api/chat",
+            json={"message": "Hi", "email": "test@test.com"},
+            headers={"Idempotency-Key": " "},
+        )
+
+        assert response.status_code == 422
 
     @patch("api.main.set_job", new_callable=AsyncMock)
     @patch("api.main.run_agent", new_callable=AsyncMock)
@@ -264,6 +364,35 @@ class TestReview:
         assert response.json()["status"] == "completed"
         mock_resume.assert_awaited_once()
         mock_set.assert_awaited_once()
+
+    @patch("api.main.resume_support_graph", new_callable=AsyncMock)
+    async def test_repeated_review_returns_the_stored_terminal_result(
+        self,
+        mock_resume,
+        client,
+        _mock_lifespan,
+        mock_redis,
+    ):
+        _mock_lifespan.redis_client = mock_redis
+        await store_job(
+            mock_redis,
+            "review-complete",
+            {
+                "status": "completed",
+                "response": "Approved answer",
+                "citations": [],
+                "requires_human_review": False,
+            },
+        )
+
+        response = await client.post(
+            "/api/reviews/review-complete",
+            json={"action": "approve"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["response"] == "Approved answer"
+        mock_resume.assert_not_awaited()
 
     @patch("api.main.get_job", new_callable=AsyncMock)
     async def test_job_failed(self, mock_get, client: AsyncClient):

@@ -119,16 +119,19 @@ describe("Follow-up flow", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     // Verify submitChat was called with the same name/email
-    expect(mockedSubmitChat).toHaveBeenLastCalledWith({
-      name: "Ali",
-      email: "ali@test.com",
-      message: "Follow-up question",
-      channel: "web",
-      history: [
-        { role: "customer", content: "First question" },
-        { role: "agent", content: "Agent reply 1" },
-      ],
-    });
+    expect(mockedSubmitChat).toHaveBeenLastCalledWith(
+      {
+        name: "Ali",
+        email: "ali@test.com",
+        message: "Follow-up question",
+        channel: "web",
+        history: [
+          { role: "customer", content: "First question" },
+          { role: "agent", content: "Agent reply 1" },
+        ],
+      },
+      expect.any(String),
+    );
   });
 
   it("maintains full conversation history across follow-ups", async () => {

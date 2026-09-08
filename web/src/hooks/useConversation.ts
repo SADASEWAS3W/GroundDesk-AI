@@ -1,7 +1,17 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import type { Conversation, JobStatus, Message } from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import type { Citation, Conversation, JobStatus, Message } from "@/lib/types";
+
+const CONVERSATION_STORAGE_KEY = "grounddesk:conversation";
+const MESSAGE_STATUSES = new Set<Message["status"]>([
+  "sent",
+  "processing",
+  "waiting_review",
+  "completed",
+  "failed",
+  "rejected",
+]);
 
 const initialConversation: Conversation = {
   messages: [],
@@ -10,10 +20,152 @@ const initialConversation: Conversation = {
   isFollowUpMode: false, // 是否已完成第一轮问答，决定初始表单还是追问输入框
 };
 
-// 会话是只存在于当前组件生命周期里。刷新页面、组件卸载或者重新挂载以后，状态都会丢失；没有写入localStorage，也没从后端恢复
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseCitation(value: unknown): Citation | null {
+  if (
+    !isRecord(value) ||
+    typeof value.index !== "number" ||
+    typeof value.document_id !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.excerpt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    index: value.index,
+    document_id: value.document_id,
+    title: value.title,
+    excerpt: value.excerpt,
+  };
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseMessage(value: unknown): Message | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== "string" ||
+    (value.role !== "customer" && value.role !== "agent") ||
+    typeof value.content !== "string" ||
+    typeof value.timestamp !== "string" ||
+    typeof value.status !== "string" ||
+    !MESSAGE_STATUSES.has(value.status as Message["status"])
+  ) {
+    return null;
+  }
+
+  const timestamp = new Date(value.timestamp);
+  if (Number.isNaN(timestamp.getTime())) return null;
+
+  const jobId = optionalString(value.jobId);
+  const interruptedWithoutJob =
+    (value.status === "sent" || value.status === "processing") && !jobId;
+  const citations = Array.isArray(value.citations)
+    ? value.citations.map(parseCitation).filter((item): item is Citation => item !== null)
+    : undefined;
+
+  return {
+    id: value.id,
+    role: value.role,
+    content: value.content,
+    timestamp,
+    status: interruptedWithoutJob
+      ? "failed"
+      : (value.status as Message["status"]),
+    jobId,
+    replyToId: optionalString(value.replyToId),
+    error: interruptedWithoutJob
+      ? "The request was interrupted before a job was created. Please try again."
+      : optionalString(value.error),
+    citations,
+    requiresHumanReview:
+      typeof value.requiresHumanReview === "boolean"
+        ? value.requiresHumanReview
+        : undefined,
+    reviewReason:
+      value.reviewReason === null ? null : optionalString(value.reviewReason),
+  };
+}
+
+function readPersistedConversation(): Conversation | null {
+  try {
+    const raw = window.sessionStorage.getItem(CONVERSATION_STORAGE_KEY);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (
+      !isRecord(value) ||
+      !Array.isArray(value.messages) ||
+      typeof value.customerName !== "string" ||
+      typeof value.customerEmail !== "string" ||
+      typeof value.isFollowUpMode !== "boolean"
+    ) {
+      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      return null;
+    }
+    const messages = value.messages.map(parseMessage);
+    if (messages.some((message) => message === null)) {
+      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      return null;
+    }
+    return {
+      messages: messages as Message[],
+      customerName: value.customerName,
+      customerEmail: value.customerEmail,
+      isFollowUpMode: value.isFollowUpMode,
+    };
+  } catch {
+    try {
+      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+    } catch {
+      // Storage can be unavailable; the in-memory conversation still works.
+    }
+    return null;
+  }
+}
+
+function persistConversation(conversation: Conversation): void {
+  try {
+    if (
+      conversation.messages.length === 0 &&
+      !conversation.customerName &&
+      !conversation.customerEmail
+    ) {
+      window.sessionStorage.removeItem(CONVERSATION_STORAGE_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(
+      CONVERSATION_STORAGE_KEY,
+      JSON.stringify(conversation),
+    );
+  } catch {
+    // Storage can be unavailable; the in-memory conversation still works.
+  }
+}
+
 export function useConversation() {
   const [conversation, setConversation] =
     useState<Conversation>(initialConversation);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    const restored = readPersistedConversation();
+    if (restored) {
+      // Restoring persisted external state intentionally synchronizes on mount.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setConversation(restored);
+    }
+    setIsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    persistConversation(conversation);
+  }, [conversation, isHydrated]);
 
   const addCustomerMessage = useCallback((content: string): Message => {
     const message: Message = {
@@ -155,6 +307,7 @@ export function useConversation() {
 
   return {
     conversation, // 当前完整对话
+    isHydrated,
     addCustomerMessage, // 创建本地客户信息
     updateMessageStatus, // 更新客户信息或更新Agent回复
     setMessageJobId, // 将前端信息关联到后台任务
