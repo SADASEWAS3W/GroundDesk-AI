@@ -7,12 +7,18 @@ interface InitialFormProps {
   onSubmit: (name: string, email: string, message: string) => void;
   isSubmitting: boolean;
   isCoolingDown?: boolean;
+  cooldownRemainingSeconds?: number;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_MESSAGE_LENGTH = 2000;
 
-export function InitialForm({ onSubmit, isSubmitting, isCoolingDown = false }: InitialFormProps) {
+export function InitialForm({
+  onSubmit,
+  isSubmitting,
+  isCoolingDown = false,
+  cooldownRemainingSeconds = 0,
+}: InitialFormProps) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
@@ -141,7 +147,11 @@ export function InitialForm({ onSubmit, isSubmitting, isCoolingDown = false }: I
         disabled={isSubmitting || isCoolingDown}
         className="min-h-[44px] rounded-lg bg-blue-600 px-5 py-2.5 text-base sm:text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-300"
       >
-        {isCoolingDown ? "Please wait..." : isSubmitting ? "Sending..." : "Send Message"}
+        {isCoolingDown
+          ? `Please wait ${cooldownRemainingSeconds}s`
+          : isSubmitting
+            ? "Sending..."
+            : "Send Message"}
       </button>
     </form>
   );

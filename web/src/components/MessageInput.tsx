@@ -6,12 +6,14 @@ interface MessageInputProps {
   onSubmit: (message: string) => void;
   disabled: boolean;
   maxLength?: number;
+  cooldownRemainingSeconds?: number;
 }
 
 export function MessageInput({
   onSubmit,
   disabled,
   maxLength = 2000,
+  cooldownRemainingSeconds = 0,
 }: MessageInputProps) {
   const [value, setValue] = useState("");
 
@@ -61,7 +63,9 @@ export function MessageInput({
           disabled={!canSubmit}
           className="min-h-[44px] rounded-lg bg-blue-600 px-5 py-2 text-base sm:text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-300"
         >
-          Send
+          {cooldownRemainingSeconds > 0
+            ? `Please wait ${cooldownRemainingSeconds}s`
+            : "Send"}
         </button>
       </div>
     </div>

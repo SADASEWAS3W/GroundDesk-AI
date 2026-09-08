@@ -196,6 +196,20 @@ describe("MessageInput", () => {
     render(<MessageInput onSubmit={vi.fn()} disabled={true} />);
     expect(screen.getByLabelText("Support message")).toBeDisabled();
   });
+
+  it("shows the remaining cooldown on the send button", () => {
+    render(
+      <MessageInput
+        onSubmit={vi.fn()}
+        disabled={true}
+        cooldownRemainingSeconds={4}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Please wait 4s" }),
+    ).toBeDisabled();
+  });
 });
 
 // ---------- StatusIndicator ----------

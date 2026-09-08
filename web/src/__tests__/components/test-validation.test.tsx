@@ -92,10 +92,17 @@ describe("InitialForm validation", () => {
     expect(counter).not.toHaveClass("text-red-600");
   });
 
-  it("shows 'Please wait...' on button when cooling down", () => {
-    render(<InitialForm onSubmit={onSubmit} isSubmitting={false} isCoolingDown={true} />);
+  it("shows the remaining cooldown on the button", () => {
+    render(
+      <InitialForm
+        onSubmit={onSubmit}
+        isSubmitting={false}
+        isCoolingDown={true}
+        cooldownRemainingSeconds={7}
+      />,
+    );
 
-    const button = screen.getByRole("button", { name: "Please wait..." });
+    const button = screen.getByRole("button", { name: "Please wait 7s" });
     expect(button).toBeDisabled();
   });
 

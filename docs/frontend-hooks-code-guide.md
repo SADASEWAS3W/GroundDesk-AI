@@ -9,7 +9,7 @@
 | [useConversation.ts](../web/src/hooks/useConversation.ts) | 保存会话状态，提供消息和客户信息操作 |
 | [useJobPolling.ts](../web/src/hooks/useJobPolling.ts) | 根据任务 ID 查询结果，处理重试、超时和清理 |
 | [useHealthCheck.ts](../web/src/hooks/useHealthCheck.ts) | 检查后端连接，支持超时取消、手动刷新和恢复触发 |
-| [useCooldown.ts](../web/src/hooks/useCooldown.ts) | 管理可重新计时的冷却窗口 |
+| [useCooldown.ts](../web/src/hooks/useCooldown.ts) | 管理可取消、可恢复并显示剩余时间的冷却窗口 |
 | [SupportForm.tsx](../web/src/components/SupportForm.tsx) | 组合 Hooks，协调提交、消息更新、审核和重试 |
 | [api.ts](../web/src/lib/api.ts) | 统一封装 HTTP 请求和 HTTP 错误 |
 | [types.ts](../web/src/lib/types.ts) | 定义消息、会话和 API 数据类型 |
@@ -326,40 +326,36 @@ return { isHealthy, refresh };
 
 `StatusIndicator` 根据 null / true / false 分别显示 Checking connection / Connected / Service unavailable，并用灰、绿、红色提示。不可用时提供 Check again 按钮调用 refresh。健康状态仍只用于展示，没有参与当前提交禁用条件；当前也没有定时心跳或失败自动重试，所以状态不保证后续每次业务请求一定成功。
 
-## 5. useCooldown：可配置的重新计时窗口
+## 5. useCooldown：可配置、可恢复的重新计时窗口
 
 核心代码：
 
 ```ts
 export function useCooldown(durationMs: number = 10000) {
   const [isCoolingDown, setIsCoolingDown] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const endTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const startCooldown = useCallback(() => {
-    setIsCoolingDown(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
+    scheduleCooldown(Date.now() + validatedDurationMs);
+  }, [scheduleCooldown, validatedDurationMs]);
 
-    timerRef.current = setTimeout(() => {
-      setIsCoolingDown(false);
-      timerRef.current = null;
-    }, durationMs);
-  }, [durationMs]);
-
-  return { isCoolingDown, startCooldown };
+  return { isCoolingDown, remainingSeconds, startCooldown, cancelCooldown };
 }
 ```
 
-状态控制界面，ref 管理定时器句柄；句柄变化无需渲染。`ReturnType<typeof setTimeout>` 从函数推导句柄类型，减少不同类型环境下手写 timer 类型的不一致。
+`isCoolingDown` 和 `remainingSeconds` 控制界面；ref 保存结束定时器、每秒更新定时器和绝对结束时间。句柄变化无需渲染。`ReturnType<typeof setTimeout>` 从函数推导句柄类型，减少不同类型环境下手写 timer 类型的不一致。
 
-默认冷却 10 秒。再次调用先清掉旧计时器，再从当前时间重新计算。例如 5 秒冷却在第 3 秒重启，将在第 8 秒结束，而不是第 5 秒结束。
+默认冷却 10 秒。再次调用先清掉旧定时器，再从当前时间重新计算。例如 5 秒冷却在第 3 秒重启，将在第 8 秒结束。剩余秒数根据“绝对结束时间减去 Date.now()”计算并向上取整，避免定时器延迟造成累计偏差；独立的结束定时器负责在截止时间关闭冷却。
 
-`useCallback` 依赖 durationMs，使下一次调用采用新的时长；仅改变参数不会重排已经建立的旧定时器。
+`cancelCooldown` 可以提前清理两个定时器、持久化截止时间和界面状态。所有句柄都使用 `!== null` 判断。`durationMs` 必须是有限的非负数；0 表示不启用冷却，负数、NaN 和 Infinity 会抛出 RangeError。仅改变参数不会重排已经建立的旧定时器。
 
-当前组件在普通任务完成时调用 startCooldown；提交进行中用 isSubmitting / isPolling 禁止操作，成功后再用冷却标记继续限制提交。
+截止时间保存在当前标签页的 sessionStorage 中。组件卸载只清理运行中的定时器而保留截止时间；刷新或重新挂载时读取绝对截止时间并恢复剩余冷却。过期或无效数据会自动删除。存储不可用时降级为仅内存冷却。
 
-这是前端冷却窗口，不提供服务器限流，也不延迟某个函数直到输入停止，不应直接称为输入防抖。刷新页面或直接调用 API 可以绕过它。
+当前组件在普通任务完成和审核操作成功时调用 startCooldown；提交进行中用 isSubmitting / isPolling 禁止操作，成功后再用冷却标记继续限制提交。首次表单和追问按钮会显示 `Please wait Ns`。
 
-当前缺少卸载清理 Effect、主动取消接口、剩余时间和 durationMs 参数校验。这些是可改进点，不能描述为已有能力。
+这是可跨同一标签页刷新恢复的前端冷却窗口，不提供服务器限流，也不延迟某个函数直到输入停止，不应直接称为输入防抖。关闭标签页、清除存储或直接调用 API 仍可绕过它；严格频率限制必须由服务端实现。
 
 ## 6. SupportForm：将四个 Hooks 串成业务流程
 
@@ -406,7 +402,7 @@ waiting_review 触发 handleReview。组件将前端客户消息标记为 comple
 
 因此，前端 completed 在这条路径上表示消息进入展示阶段，不代表后台任务已经批准或最终回答完成。后端 waiting_review 与前端消息状态要分别理解。
 
-审核按钮通过 submitReview 提交 approve / edit / reject。当前成功后只清空 pendingReview，没有继续轮询，也没有使用接口返回值更新已有聊天消息；审核流程同样不会调用 startCooldown。
+审核按钮通过 submitReview 提交 approve / edit / reject。成功后使用接口返回值更新已有聊天消息，清空 pendingReview 并调用 startCooldown；审核结果是终态，因此不会继续轮询。
 
 ### 6.5 界面状态组合
 
@@ -435,7 +431,7 @@ MessageInput 还检查非空和最大长度，Enter 提交、Shift+Enter 换行�
 | useConversation | 初始状态、消息字段、追加顺序、状态更新、Agent 回复、追问模式、错误和客户信息 | renderHook、act、检查 result.current |
 | useJobPolling | 空 ID、完成、多轮查询、失败、等待审核、HTTP 分类、指数退避、retry_after 为 0、单次和整体超时、卸载取消 | mock getJobStatus、fake timers、AbortSignal、异步推进时间 |
 | useHealthCheck | 初始 null、健康、异常、五秒取消、手动刷新、竞态保护、可见和在线事件、卸载清理 | mock checkHealth、fake timers、AbortSignal、事件派发 |
-| useCooldown | 初始状态、启动、到期、默认 10 秒、重复调用重新计时 | fake timers、act 内推进时间 |
+| useCooldown | 初始状态、剩余秒数、到期、重启、主动取消、卸载清理、刷新恢复、参数校验 | fake timers、sessionStorage、act 内推进时间 |
 
 例如等待 5 秒的测试不必真实休眠：
 
@@ -447,7 +443,7 @@ await act(async () => {
 
 fake timers 控制定时器，异步推进同时处理 Promise；act 让测试在断言前处理 React 更新。`result.current` 读取最近一次渲染结果。
 
-可补充的测试包括旧任务迟到响应、回调更新不重启轮询、rejected 终态、HTTP 请求挂起、重复完成去重、正常回答引用保留，以及冷却卸载清理。
+可补充的测试包括回调更新不重启轮询、多个 Hook 实例共享存储键的行为，以及浏览器禁用 sessionStorage 时的降级路径。
 
 ## 8. 面试讲述：先讲业务，再解释代码
 
@@ -538,7 +534,7 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.12 冷却控制是不是防抖或者限流？
 
-“它是正常完成后的前端冷却窗口。调用 startCooldown 就进入冷却，默认十秒，重复调用会重新计时。它没有延迟执行提交函数，所以我不会把它说成输入防抖；用户也能绕过页面直接调用 API，因此不能替代后端限流。”
+“它是任务或审核成功后的前端冷却窗口。调用 startCooldown 就进入冷却，默认十秒，重复调用会重新计时；remainingSeconds 用于展示倒计时，cancelCooldown 可以提前结束。绝对截止时间保存在 sessionStorage 中，同一标签页刷新后会继续。它没有延迟提交函数，也不能替代后端限流。”
 
 ### 9.13 怎么测轮询和冷却，不会每次都等五分钟吧？
 
@@ -562,7 +558,7 @@ setMessages((prev) => [...prev, B]);
 | waiting_review | 停止查询，交给审核处理器 | 不自动继续等审核完成 |
 | 5 秒冷却在第 3 秒重启 | 约第 8 秒结束 | 清除旧 timer 后重新计时 |
 | 冷却中修改 durationMs | 已存在 timer 不自动改期 | 新时长用于下一次 startCooldown |
-| 页面刷新 | 本地会话和冷却重新初始化 | 无持久化 |
+| 页面刷新 | 本地会话重新初始化，未过期的冷却从 sessionStorage 恢复 | 同一标签页的体验层持久化 |
 | 后端启动时健康，之后断线 | 状态灯会在下次恢复可见、online 或手动检查后变化 | 当前没有周期心跳 |
 
 ## 11. 讲述边界与改进顺序

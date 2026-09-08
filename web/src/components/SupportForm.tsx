@@ -26,7 +26,7 @@ export function SupportForm() {
     setCustomerInfo,
   } = useConversation();
   const { isHealthy, refresh: refreshHealth } = useHealthCheck();
-  const { isCoolingDown, startCooldown } = useCooldown();
+  const { isCoolingDown, remainingSeconds, startCooldown } = useCooldown();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -266,12 +266,14 @@ export function SupportForm() {
         <MessageInput
           onSubmit={handleFollowUpSubmit}
           disabled={isProcessing || isCoolingDown}
+          cooldownRemainingSeconds={isCoolingDown ? remainingSeconds : 0}
         />
       ) : (
         <InitialForm
           onSubmit={handleInitialSubmit}
           isSubmitting={isProcessing}
           isCoolingDown={isCoolingDown}
+          cooldownRemainingSeconds={remainingSeconds}
         />
       )}
     </div>
