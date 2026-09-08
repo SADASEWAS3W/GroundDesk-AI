@@ -8,7 +8,7 @@
 |---|---|
 | [useConversation.ts](../web/src/hooks/useConversation.ts) | 保存会话状态，提供消息和客户信息操作 |
 | [useJobPolling.ts](../web/src/hooks/useJobPolling.ts) | 根据任务 ID 查询结果，处理重试、超时和清理 |
-| [useHealthCheck.ts](../web/src/hooks/useHealthCheck.ts) | 挂载时检查后端连接，提供三态结果 |
+| [useHealthCheck.ts](../web/src/hooks/useHealthCheck.ts) | 检查后端连接，支持超时取消、手动刷新和恢复触发 |
 | [useCooldown.ts](../web/src/hooks/useCooldown.ts) | 管理可重新计时的冷却窗口 |
 | [SupportForm.tsx](../web/src/components/SupportForm.tsx) | 组合 Hooks，协调提交、消息更新、审核和重试 |
 | [api.ts](../web/src/lib/api.ts) | 统一封装 HTTP 请求和 HTTP 错误 |
@@ -291,37 +291,40 @@ return () => {
 - waiting_review 即使未提供 onReview，也会停止轮询；调用方应传入处理器。
 - Hook 一次只管理一个 job。`SupportForm` 用同步 ref 锁阻止任务结束前的重复提交，避免新任务覆盖当前任务；如产品需要并行任务，应把状态提升为按 job ID 管理的集合。
 
-## 4. useHealthCheck：挂载时的一次连接检查
+## 4. useHealthCheck：可取消和可刷新的连接检查
 
-实现完整核心逻辑：
+Hook 保留 `boolean | null` 三态，同时返回稳定的 `refresh` 方法：
 
 ```ts
 const [isHealthy, setIsHealthy] = useState<boolean | null>(null);
+const requestControllerRef = useRef<AbortController | null>(null);
+const requestSequenceRef = useRef(0);
 
-useEffect(() => {
-  let cancelled = false;
+const refresh = useCallback(async () => {
+  const requestSequence = ++requestSequenceRef.current;
+  cancelCurrentRequest();
 
-  checkHealth().then((healthy) => {
-    if (!cancelled) setIsHealthy(healthy);
-  });
+  const controller = new AbortController();
+  requestControllerRef.current = controller;
+  const healthy = await checkHealth(controller.signal);
 
-  return () => {
-    cancelled = true;
-  };
-}, []);
+  if (requestSequence === requestSequenceRef.current) {
+    setIsHealthy(healthy);
+  }
+}, [cancelCurrentRequest]);
 
-return { isHealthy };
+return { isHealthy, refresh };
 ```
 
 三态比初始值直接使用 false 更准确：null 表示结果未返回，true 表示健康，false 表示不可用。
 
-`api.ts` 的 checkHealth 请求 `/health`，只有 HTTP 成功且 JSON 中 `status === "ok"` 才返回 true。非成功 HTTP、网络失败、JSON 解析异常均转换为 false，因此 Hook 的 then 无须重复实现这些错误判断。
+`api.ts` 的 checkHealth 接收 AbortSignal 并请求 `/health`，只有 HTTP 成功且 JSON 中 `status === "ok"` 才返回 true。非成功 HTTP、网络失败、请求取消和 JSON 解析异常均转换为 false。
 
-`StatusIndicator` 根据 null / true / false 分别显示 Checking connection / Connected / Service unavailable，并用灰、绿、红色提示。
+每次 refresh 都先取消旧请求，再创建五秒超时和新的 AbortController。递增的 requestSequence 负责结果排序：旧请求即使在取消后仍然返回，也不能覆盖较新检查的结果。组件卸载时会清除超时、中止请求并让当前序号失效。
 
-空依赖表示每次正常挂载检查，不是定时心跳。React 开发环境 Strict Mode 可能额外执行 Effect 建立和清理，不能承诺所有环境只发生一个 HTTP 请求。
+挂载 Effect 会立即 refresh，并监听 visibilitychange 和 online。页面从后台恢复可见或浏览器报告网络恢复时重新检查；页面隐藏时不会检查。清理函数移除两个监听器。
 
-该 Hook 没有手动重查、自动恢复探测、请求超时或 AbortController。健康状态只用于展示，没有参与当前提交禁用条件；状态也不保证后续每次请求一定成功。
+`StatusIndicator` 根据 null / true / false 分别显示 Checking connection / Connected / Service unavailable，并用灰、绿、红色提示。不可用时提供 Check again 按钮调用 refresh。健康状态仍只用于展示，没有参与当前提交禁用条件；当前也没有定时心跳或失败自动重试，所以状态不保证后续每次业务请求一定成功。
 
 ## 5. useCooldown：可配置的重新计时窗口
 
@@ -431,7 +434,7 @@ MessageInput 还检查非空和最大长度，Enter 提交、Shift+Enter 换行�
 |---|---|---|
 | useConversation | 初始状态、消息字段、追加顺序、状态更新、Agent 回复、追问模式、错误和客户信息 | renderHook、act、检查 result.current |
 | useJobPolling | 空 ID、完成、多轮查询、失败、等待审核、HTTP 分类、指数退避、retry_after 为 0、单次和整体超时、卸载取消 | mock getJobStatus、fake timers、AbortSignal、异步推进时间 |
-| useHealthCheck | 初始 null、健康、异常、挂载调用次数 | mock checkHealth、等待 Promise 更新 |
+| useHealthCheck | 初始 null、健康、异常、五秒取消、手动刷新、竞态保护、可见和在线事件、卸载清理 | mock checkHealth、fake timers、AbortSignal、事件派发 |
 | useCooldown | 初始状态、启动、到期、默认 10 秒、重复调用重新计时 | fake timers、act 内推进时间 |
 
 例如等待 5 秒的测试不必真实休眠：
@@ -452,7 +455,7 @@ fake timers 控制定时器，异步推进同时处理 Promise；act 让测试�
 
 ### 8.1 一分钟开场回答
 
-“这个项目的客服处理是异步的，前端提交问题以后，后端先返回任务 ID，前端再轮询结果。我把相关逻辑拆成四个 Hook：会话 Hook 管消息列表、客户信息和追问模式；轮询 Hook 管任务查询、重试、超时和定时器清理；健康检查 Hook 在页面挂载时检查后端连接；冷却 Hook 在正常回答完成后限制十秒内再次提交。最后由 SupportForm 把它们组合起来，负责提交请求和处理完成、失败、人工审核这些业务分支。这样组件主要描述页面和流程，各个 Hook 的状态逻辑也能单独测试。”
+“这个项目的客服处理是异步的，前端提交问题以后，后端先返回任务 ID，前端再轮询结果。我把相关逻辑拆成四个 Hook：会话 Hook 管消息列表、客户信息和追问模式；轮询 Hook 管任务查询、重试、超时和定时器清理；健康检查 Hook 管可取消的连接检查、手动刷新和恢复触发；冷却 Hook 在正常回答完成后限制十秒内再次提交。最后由 SupportForm 把它们组合起来，负责提交请求和处理完成、失败、人工审核这些业务分支。”
 
 ### 8.2 被要求展开时，按一次请求说明
 
@@ -531,7 +534,7 @@ setMessages((prev) => [...prev, B]);
 
 ### 9.11 健康检查为什么用 null、true、false？会自动恢复吗？
 
-“null 表示检查还没完成，不能在一开始就把服务显示成故障；true 和 false 表示检查结果。当前挂载时检查一次，没有周期重试或自动恢复探测，显示健康也不保证后续请求一定成功。实际请求仍由各自的错误处理负责。”
+“null 表示首次检查还没完成，不能在一开始就把服务显示成故障；true 和 false 表示最近一次有效检查结果。挂载、页面恢复可见、网络恢复和手动操作都会触发 refresh；每次检查有五秒超时，并会取消旧请求和忽略旧结果。当前没有定时心跳或失败自动重试，实际业务请求仍由各自的错误处理负责。”
 
 ### 9.12 冷却控制是不是防抖或者限流？
 
@@ -560,7 +563,7 @@ setMessages((prev) => [...prev, B]);
 | 5 秒冷却在第 3 秒重启 | 约第 8 秒结束 | 清除旧 timer 后重新计时 |
 | 冷却中修改 durationMs | 已存在 timer 不自动改期 | 新时长用于下一次 startCooldown |
 | 页面刷新 | 本地会话和冷却重新初始化 | 无持久化 |
-| 后端启动时健康，之后断线 | 状态灯不一定立即变化 | 当前仅挂载检查 |
+| 后端启动时健康，之后断线 | 状态灯会在下次恢复可见、online 或手动检查后变化 | 当前没有周期心跳 |
 
 ## 11. 讲述边界与改进顺序
 
@@ -571,7 +574,7 @@ setMessages((prev) => [...prev, B]);
 | “每五秒准时查一次” | 首次等五秒，后续在请求结束后按 retry_after 或默认间隔查询 |
 | “所有错误都按五秒固定重试” | 可恢复请求错误按 5 秒、10 秒指数退避；普通 4xx 立即失败；processing 遵守 retry_after |
 | “一个 Hook 可以同时追踪多个任务” | Hook 一次管理一个 job；SupportForm 在任务终止或审核完成前锁住新提交 |
-| “健康检查会持续监控” | 正常挂载时检查，没有周期探测 |
+| “健康检查会持续监控” | 挂载、恢复可见、网络恢复或手动操作时检查，没有周期心跳 |
 | “会话 Hook 自动恢复历史” | 保存当前组件内存状态，没有刷新恢复 |
 | “十秒冷却保证用户无法频繁调用 API” | 只控制前端交互，不能代替后端限制 |
 | “轮询会采用提交接口的首次 retry_after” | Hook 只接收 jobId，因此首次查询仍固定等待五秒 |

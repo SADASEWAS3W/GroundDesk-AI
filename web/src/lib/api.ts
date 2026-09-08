@@ -64,9 +64,9 @@ export async function submitReview(
   return res.json();
 }
 
-export async function checkHealth(): Promise<boolean> {
+export async function checkHealth(signal?: AbortSignal): Promise<boolean> {
   try {
-    const res = await fetch(`${API_URL}/health`);
+    const res = await fetch(`${API_URL}/health`, { signal });
     if (!res.ok) return false;
     const body = await res.json();
     return body.status === "ok";

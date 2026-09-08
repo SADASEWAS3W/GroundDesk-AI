@@ -5,6 +5,7 @@ interface StatusIndicatorProps {
   isProcessing: boolean;
   error: string | null;
   onRetry?: () => void;
+  onHealthRetry?: () => void;
 }
 
 export function StatusIndicator({
@@ -12,6 +13,7 @@ export function StatusIndicator({
   isProcessing,
   error,
   onRetry,
+  onHealthRetry,
 }: StatusIndicatorProps) {
   return (
     <div className="flex flex-col gap-2">
@@ -34,6 +36,15 @@ export function StatusIndicator({
               ? "Connected"
               : "Service unavailable"}
         </span>
+        {isHealthy === false && onHealthRetry && (
+          <button
+            type="button"
+            onClick={onHealthRetry}
+            className="font-medium text-red-700 underline hover:text-red-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2"
+          >
+            Check again
+          </button>
+        )}
       </div>
 
       {/* Processing spinner */}

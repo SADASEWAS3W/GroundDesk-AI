@@ -222,6 +222,23 @@ describe("StatusIndicator", () => {
     expect(screen.getByText("Service unavailable")).toBeInTheDocument();
   });
 
+  it("allows an unavailable service to be checked again", async () => {
+    const user = userEvent.setup();
+    const onHealthRetry = vi.fn();
+    render(
+      <StatusIndicator
+        isHealthy={false}
+        isProcessing={false}
+        error={null}
+        onHealthRetry={onHealthRetry}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+
+    expect(onHealthRetry).toHaveBeenCalledTimes(1);
+  });
+
   it("shows processing text when isProcessing", () => {
     render(
       <StatusIndicator isHealthy={true} isProcessing={true} error={null} />,

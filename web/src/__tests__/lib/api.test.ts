@@ -1,4 +1,4 @@
-import { getJobStatus } from "@/lib/api";
+import { checkHealth, getJobStatus } from "@/lib/api";
 
 describe("getJobStatus", () => {
   afterEach(() => {
@@ -44,6 +44,28 @@ describe("getJobStatus", () => {
       name: "ApiError",
       message: "Job not found",
       status: 404,
+    });
+  });
+});
+
+describe("checkHealth", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("passes the abort signal to fetch", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await expect(checkHealth(controller.signal)).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/health", {
+      signal: controller.signal,
     });
   });
 });

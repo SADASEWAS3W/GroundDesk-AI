@@ -25,7 +25,7 @@ export function SupportForm() {
     applyReviewResult,
     setCustomerInfo,
   } = useConversation();
-  const { isHealthy } = useHealthCheck();
+  const { isHealthy, refresh: refreshHealth } = useHealthCheck();
   const { isCoolingDown, startCooldown } = useCooldown();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -233,6 +233,7 @@ export function SupportForm() {
         isProcessing={isProcessing}
         error={error}
         onRetry={error ? handleRetry : undefined}
+        onHealthRetry={refreshHealth}
       />
 
       {conversation.isFollowUpMode && (
